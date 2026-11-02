@@ -1,0 +1,6 @@
+domain/.lake/
+domain/build/
+domain/lake-manifest.json.bak
+third_party/
+bin/
+_build/

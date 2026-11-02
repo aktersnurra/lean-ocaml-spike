@@ -1,0 +1,11 @@
+name = "spike_domain"
+version = "0.1.0"
+defaultTargets = ["Spike"]
+
+[[require]]
+name = "lean_to_lambdabox"
+git = "https://github.com/peregrine-project/lean-to-lambdabox"
+rev = "58701f8b77111012b4b43af16c241f4ac7c55ab1"
+
+[[lean_lib]]
+name = "Spike"
