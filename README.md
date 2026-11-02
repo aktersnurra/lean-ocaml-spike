@@ -7,15 +7,37 @@ trustworthy boundary, without maintaining a second implementation?
 Scope here is **Gate 1 only**: one trivial pure function, extracted and called from OCaml.
 Gates 2 and 3 are deliberately not scaffolded until Gate 1 passes.
 
-## Status: Gate 1 FAILED (stop rule hit), 2026-11-02
+## Status: Gate 1 PASS with one approved deviation (frontend patch), 2026-11-02
 
 | Step | State |
 |------|-------|
 | Lean project builds on v4.22.0, proof checks, no `sorry` | **pass** |
 | `#erase` emits `build/gate1.ast`, `.ast.inlinings`, `gate1.mli` | **pass** |
-| opam switches (`scripts/bootstrap.sh`) | **pass** (needed an environment-only download workaround, see below) |
-| `peregrine compile` (step 3) | **FAIL**: the frontend and Peregrine serialize integer literals differently |
-| Malfunction -> link -> run, Gate 1b (Dune) | not reached for `gate1`; the same path works on a literal-free diagnostic (below) |
+| opam switches (`scripts/bootstrap.sh`) | **pass** (environment-only download workaround, see below) |
+| `peregrine compile` (step 3) | **pass only with `patches/l2l-primint-numeric.patch`**; fails at the pins without it (below) |
+| Gate 1a: `malfunction cmx`, `ocamlfind` link, smoke test incl. 2^100 -> 2^101+1 | **pass** |
+| Gate 1b: Dune executable via `leancore` library, same smoke test, negative input rejected | **pass** |
+| Clean rebuild (`rm -rf domain/.lake domain/build _build third_party bin`, then both gates) | **pass** |
+
+**Deviation from the stop rule (approved after the failure below was reported):** a one-line
+patch to the Lean frontend, `patches/l2l-primint-numeric.patch`, makes it print `primInt`
+literals as numeric atoms (`(primInt 2)`) instead of quoted strings (`(primInt "2")`). It
+changes the on-disk format of integer literals only, not erasure. `scripts/extract.sh` applies it
+idempotently to the lake checkout of the frontend after checking that the checkout is at
+`L2L_REV`. Upstream issue draft: `docs/upstream-issue-primint.md`. Peregrine and Malfunction are
+unpatched.
+
+Commands that pass (with the switches from `scripts/bootstrap.sh`):
+
+```bash
+scripts/gate1.sh    # Gate 1a
+scripts/gate1b.sh   # Gate 1b
+```
+
+Boundary check: if `ocaml/bin/main.ml` calls `Gate1.main` directly, the build fails with
+`Error: Unbound module Gate1`. Only `Leancore` is visible to clients.
+
+## Original Gate 1 failure (without the patch)
 
 ### Exact failure
 
@@ -38,7 +60,7 @@ emits the quoted form. So no frontend pin works with Peregrine at or after `556f
 Any real domain code has numeric literals, so this blocks the pipeline in general, not
 just this example.
 
-What would fix it, and why I stopped instead:
+Options considered when Gate 1 stopped (the frontend patch was chosen):
 - **One-line patch** to the frontend (`.atom i.repr` instead of a quoted string), or to
   Peregrine (accept both). This is a patch, so the stop rule forbids it.
 - Rewriting the `.ast` with sed is a workaround, so also not done.
@@ -71,15 +93,15 @@ the incompatibility reaches; it is not committed as a way around it.
    This is an input file, not a tool patch.
 4. `scripts/gate1.sh` steps 1-4 moved to `scripts/extract.sh` (shared with Gate 1b). It no longer
    sends Peregrine's output to `/dev/null`, because Peregrine prints errors on stdout; failures are now shown.
-5. Gate 1b scaffolding (`dune-project`, `dune`, `ocaml/leancore`, `ocaml/bin`, `scripts/gate1b.sh`),
-   untested end to end because step 3 fails. Approach, verified with a hand-written `.mlf` that
-   calls zarith: the README's `link_flags` idea **does not work**, because Dune puts link flags
+5. Gate 1b (`dune-project`, `dune`, `ocaml/leancore`, `ocaml/bin`, `scripts/gate1b.sh`).
+   Approach: the README's `link_flags` idea **does not work**, because Dune puts link flags
    *after* the executable's own modules (`No implementations provided for ... Fake`). What works:
    a `leancore` library whose `library_flags` put the prebuilt `.cmx` files into
    `leancore.cmxa` *ahead of* a hand-written boundary module. A rule copies the artefacts in,
    and a generated copy of the boundary source carries the dependency. Clients can only see the
    boundary module; the raw extracted module's `.cmi` is not exported.
-6. `versions.env`: **unchanged.**
+6. `patches/l2l-primint-numeric.patch` (approved deviation, see Status).
+7. `versions.env`: **unchanged.**
 
 ### Environment notes (not pipeline changes)
 
@@ -111,14 +133,15 @@ the incompatibility reaches; it is not committed as a way around it.
 ```bash
 scripts/bootstrap.sh                                   # opam switches
 scripts/seed-opam-cache.sh spike-peregrine <pkgs...>   # only if GitHub archives are blocked
-scripts/gate1.sh                                       # Gate 1a: currently fails at step 3
-scripts/gate1b.sh                                      # Gate 1b: Dune executable (needs 1a's step 3)
+scripts/gate1.sh                                       # Gate 1a (applies the frontend patch)
+scripts/gate1b.sh                                      # Gate 1b: Dune executable
 ```
 
 Needs `elan`, `opam`, `git`, `gcc`, `libgmp-dev`. Pins live in `versions.env`.
 
 **Stop rule:** if Gate 1 needs patches to Peregrine, the Lean frontend, or Malfunction beyond
-version pins, stop and record exactly what broke. Do not start Gate 2. (Hit; see above.)
+version pins, stop and record exactly what broke. Do not start Gate 2. (Hit once; resolved by
+the approved frontend patch above.)
 
 ## Early reads for later gates (not started, recorded so they are not lost)
 
@@ -167,6 +190,8 @@ domain/                    Lean 4 project (v4.22.0) with the frontend as a git d
   Spike/Gate1.lean         gate1 n = 2n + 1, proof it is odd, #erase to build/
   peregrine.config         Peregrine config (upstream unbox.config, 9-field form)
 scripts/bootstrap.sh       opam switches
+patches/                   l2l-primint-numeric.patch (approved deviation)
+docs/                      upstream issue draft
 scripts/seed-opam-cache.sh environment workaround for blocked GitHub archives (checksum-verified)
 scripts/extract.sh         pipeline steps 1-4 (Lean -> .ast -> .mlf -> .cmx), optional copy-out dir
 scripts/gate1.sh           Gate 1a: extract + ocamlfind link + smoke test

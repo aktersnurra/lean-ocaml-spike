@@ -30,6 +30,20 @@ echo "== 1. Lean: check proofs, erase to lambda-box =="
 mkdir -p "$BUILD"
 # lake build checks the proofs and, because Gate1.lean contains #erase, writes the .ast/.mli.
 # `lake lean` (as in the upstream Makefile) re-elaborates unconditionally so the outputs exist even if lake had nothing to do.
+# DEVIATION FROM THE STOP RULE (approved): patches/l2l-primint-numeric.patch makes the frontend
+# print primInt literals as numeric atoms, the format Peregrine requires since 556fe09. It changes
+# the serialization of integer literals only. `lake env true` materializes the dependency
+# checkout without building it; the patch is applied once (idempotent) before anything compiles.
+( cd domain && lake env true )
+L2L_PKG="$ROOT/domain/.lake/packages/lean_to_lambdabox"
+if git -C "$L2L_PKG" apply --check "$ROOT/patches/l2l-primint-numeric.patch" 2>/dev/null; then
+  git -C "$L2L_PKG" apply "$ROOT/patches/l2l-primint-numeric.patch"; echo "applied l2l-primint-numeric.patch"
+elif git -C "$L2L_PKG" apply --reverse --check "$ROOT/patches/l2l-primint-numeric.patch" 2>/dev/null; then
+  echo "l2l-primint-numeric.patch already applied"
+else
+  echo "l2l-primint-numeric.patch does not apply to $L2L_PKG"; exit 1
+fi
+[ "$(git -C "$L2L_PKG" rev-parse HEAD)" = "$L2L_REV" ] || { echo "frontend checkout is not at L2L_REV"; exit 1; }
 ( cd domain && lake build && lake lean Spike/Gate1.lean )
 test -s "$BUILD/gate1.ast" && test -s "$BUILD/gate1.mli"
 
