@@ -1,0 +1,4 @@
+(test
+ (name test_gate2)
+ (modes native)
+ (libraries zarith leancore))

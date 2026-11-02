@@ -37,6 +37,42 @@ scripts/gate1b.sh   # Gate 1b
 Boundary check: if `ocaml/bin/main.ml` calls `Gate1.main` directly, the build fails with
 `Error: Unbound module Gate1`. Only `Leancore` is visible to clients.
 
+## Gate 2: opaque byte boundary, PASS (option (a)); option (b) also works but is not recommended
+
+Both options survive extraction **without tool patches**. They rely only on the Gate 1 frontend patch (integer literals).
+
+### (a) `List Nat` transport: chosen
+- `domain/Spike/Gate2.lean`: `Spike.Wire.handle : List Nat → List Nat` holds the whole wire
+  protocol (LEB128 varints, op dispatch, error tagging), all total and structurally recursive.
+  Response `00 payload` | `01 code` (1 empty, 2 notBytes, 3 unknownOp, 4 truncated, 5 trailing).
+- Generated mli `val main: Z.t list -> Z.t list`. **Axioms used: only the shipped Nat ones**
+  (`add sub mul div mod beq decEq decLt`).
+- OCaml `Leancore.call : bytes -> bytes` (`ocaml/leancore/leancore.ml.in`, about 20 lines):
+  converts bytes to a `Z.t list`, calls the core, and checks each response element is 0..255
+  (otherwise `Contract_violation`, meaning the trusted base is broken, not bad input). It never
+  looks at domain values or decides on errors. Clients see only `Leancore`.
+- Tests (`scripts/gate2.sh`, `ocaml/test/test_gate2.ml`): 11 fixed cases (every error tag,
+  1/2-byte varint edges, 2^100, non-canonical varint) plus 100,000 random inputs through the
+  boundary, all with well-formed responses and no exceptions. Seven more cases are kernel-checked
+  `example`s in `Gate2.lean`, including `notBytes`, which real bytes cannot trigger.
+
+### (b) Opaque `ByteArray` with hand-written OCaml axioms: works, not recommended
+`experiments/gate2b/run.sh` erases `ByteArray -> ByteArray`, compiles, links and runs correctly.
+Costs:
+- **5 new hand-written trusted axioms** for even a tiny function (`UInt8.ofNat`,
+  `ByteArray.emptyWithCapacity/size/get!/push`), and more for each extra operation used
+  (`experiments/gate2b/bytearray.ml`).
+- **The mli generator does not support it**: it emits `val main: unit -> unit` with a warning,
+  so the mli must be hand-written, which adds one more unchecked assertion.
+- The shipped `axioms.ml` aggregate has to be extended.
+- Lean's in-place `push` becomes an O(n) copy (persistent semantics), unless the axioms add
+  unchecked uniqueness assumptions.
+
+String literals still make the frontend panic, and `String`/`Char` need further axioms, so text
+fields would have to be bytes on the wire.
+
+## Gate 1 (details)
+
 ## Original Gate 1 failure (without the patch)
 
 ### Exact failure
@@ -145,7 +181,7 @@ the approved frontend patch above.)
 
 ## Early reads for later gates (not started, recorded so they are not lost)
 
-- **Gate 2 (Lean side only, nothing linked):** `List Nat -> List Nat` erases with only Nat axioms,
+- **Gate 2 (superseded by the Gate 2 section above):** `List Nat -> List Nat` erases with only Nat axioms,
   and the generated mli is `val main: Z.t list -> Z.t list`. The mli generator only knows `Nat`,
   `Unit`, `Bool` and `List`; anything else becomes `unit` with a warning. `UInt8`, `ByteArray` and
   `String` erase to new `@[extern]` axioms (`UInt8.ofNat/toNat`, `ByteArray.size/get!`,
@@ -196,6 +232,10 @@ scripts/seed-opam-cache.sh environment workaround for blocked GitHub archives (c
 scripts/extract.sh         pipeline steps 1-4 (Lean -> .ast -> .mlf -> .cmx), optional copy-out dir
 scripts/gate1.sh           Gate 1a: extract + ocamlfind link + smoke test
 scripts/gate1b.sh          Gate 1b: extract + Dune build + smoke test
+scripts/gate2.sh           Gate 2: extract + Dune build + boundary tests and fuzz
+domain/Spike/Gate2.lean    wire protocol (List Nat transport), extracted as Gate2
+ocaml/test/                Gate 2 boundary tests
+experiments/gate2b/        option (b) probe: ByteArray + hand-written axioms
 app/main.ml                Gate 1a harness calling Gate1.main
 dune-project, dune         Dune project root (OCaml side only)
 ocaml/leancore/            Dune library: imported extracted objects + boundary module Leancore

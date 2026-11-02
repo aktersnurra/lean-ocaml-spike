@@ -1,13 +1,43 @@
-(* Boundary for the Gate 1 extracted core. This is the only module clients of the
-   [leancore] library can see; the raw extracted module [Gate1] (and the runtime axiom
-   modules) are linked into the library archive but their .cmi files are not exported.
+(* Boundary for the extracted Lean core. This is the only module clients of the [leancore]
+   library can see. The raw extracted modules ([Gate1], [Gate2]) and the runtime axiom
+   modules are linked into the library archive, but their .cmi files are not exported.
 
-   The generated gate1.mli ("val main: Z.t -> Z.t") is asserted, not checked: Malfunction
-   does not type-check the extracted code against it. So this boundary enforces the Lean
-   type (Nat = non-negative integer) on the way in and checks it on the way out. *)
+   The generated .mli files ("val main: Z.t -> Z.t", "val main: Z.t list -> Z.t list") are
+   asserted, not checked: Malfunction does not type-check the extracted code against them.
+   So this module checks the Lean-side types on the way in and on the way out, and does
+   nothing else. *)
+
+exception Contract_violation of string
 
 let gate1 (n : Z.t) : Z.t =
   if Z.sign n < 0 then invalid_arg "Leancore.gate1: argument must be a Nat (>= 0)";
   let r = Gate1.main n in
-  if Z.sign r < 0 then failwith "Leancore.gate1: extracted code returned a negative Nat";
+  if Z.sign r < 0 then raise (Contract_violation "gate1 returned a negative Nat");
   r
+
+(* Gate 2: opaque byte boundary. All parsing, dispatch, serialization and error tagging
+   happen in Lean ([Spike.Wire.handle]). Here we only move bytes into the list-of-Nat
+   transport and back, and check the transport invariant (each element is 0..255). *)
+
+let z255 = Z.of_int 255
+
+let to_wire (b : bytes) : Z.t list =
+  (* Built from the end so the list is in byte order without a reverse. *)
+  let acc = ref [] in
+  for i = Bytes.length b - 1 downto 0 do
+    acc := Z.of_int (Char.code (Bytes.unsafe_get b i)) :: !acc
+  done;
+  !acc
+
+let of_wire (l : Z.t list) : bytes =
+  let n = List.length l in
+  let out = Bytes.create n in
+  List.iteri
+    (fun i z ->
+      if Z.sign z < 0 || Z.gt z z255 then
+        raise (Contract_violation "core returned a non-byte element");
+      Bytes.unsafe_set out i (Char.unsafe_chr (Z.to_int z)))
+    l;
+  out
+
+let call (req : bytes) : bytes = of_wire (Gate2.main (to_wire req))

@@ -5,7 +5,8 @@
 #
 #   scripts/extract.sh [OUTDIR]
 #
-# Module list (link order): decidable eq LeanArray nat int axioms gate1.
+# Module list (link order): decidable eq LeanArray nat int axioms, then one module per entry
+# point in ENTRIES. Entry <e> comes from domain/Spike/<E>.lean, whose #erase writes build/<e>.ast.
 # Settings follow lean-to-lambdabox's benchmarks/via_malfunction Makefile defaults
 # (INLINE_AXIOMS=1, PRUNE_CONSTRUCTORS=1, UNBOX=1, FLAMBDA=1) with ARRAYML=JCFArrayOCaml4.ml:
 # the default JCFArray.ml uses Stdlib.Dynarray (OCaml >= 5.2); upstream's own
@@ -24,7 +25,8 @@ TP="$ROOT/third_party/l2l"
 PEREGRINE="opam exec --switch=$PEREGRINE_SWITCH -- peregrine"
 MALFUNCTION="opam exec --switch=$MALFUNCTION_SWITCH -- malfunction"
 OCAMLOPT="opam exec --switch=$MALFUNCTION_SWITCH -- ocamlfind ocamlopt -package zarith"
-MODULES="decidable eq LeanArray nat int axioms gate1"
+ENTRIES="gate1 gate2"
+MODULES="decidable eq LeanArray nat int axioms $ENTRIES"
 
 echo "== 1. Lean: check proofs, erase to lambda-box =="
 mkdir -p "$BUILD"
@@ -44,8 +46,11 @@ else
   echo "l2l-primint-numeric.patch does not apply to $L2L_PKG"; exit 1
 fi
 [ "$(git -C "$L2L_PKG" rev-parse HEAD)" = "$L2L_REV" ] || { echo "frontend checkout is not at L2L_REV"; exit 1; }
-( cd domain && lake build && lake lean Spike/Gate1.lean )
-test -s "$BUILD/gate1.ast" && test -s "$BUILD/gate1.mli"
+( cd domain && lake build )
+for e in $ENTRIES; do
+  ( cd domain && lake lean "Spike/${e^}.lean" )
+  test -s "$BUILD/$e.ast" && test -s "$BUILD/$e.mli"
+done
 
 echo "== 2. Fetch runtime axioms at the pinned lean-to-lambdabox revision =="
 if [ ! -d "$TP/.git" ]; then
@@ -66,10 +71,13 @@ cp "$ROOT/domain/peregrine.config" "$BUILD/peregrine.config"
 
 echo "== 3. Peregrine: lambda-box -> Malfunction (.mlf) =="
 # Peregrine reports failures on stdout and may still exit 0, so keep the log and check the output.
-( cd "$BUILD" && $PEREGRINE compile gate1.ast peregrine.config --attributes=gate1.ast.inlinings > peregrine.log 2>&1 ) || true
-if ! grep -q "Compiled successfully" "$BUILD/peregrine.log" || [ ! -s "$BUILD/gate1.mlf" ]; then
-  echo "peregrine compile FAILED:"; cat "$BUILD/peregrine.log"; exit 1
-fi
+for e in $ENTRIES; do
+  rm -f "$BUILD/$e.mlf"
+  ( cd "$BUILD" && $PEREGRINE compile "$e.ast" peregrine.config --attributes="$e.ast.inlinings" > "$e.peregrine.log" 2>&1 ) || true
+  if ! grep -q "Compiled successfully" "$BUILD/$e.peregrine.log" || [ ! -s "$BUILD/$e.mlf" ]; then
+    echo "peregrine compile $e FAILED:"; cat "$BUILD/$e.peregrine.log"; exit 1
+  fi
+done
 
 echo "== 4. OCaml: compile axioms and the extracted module =="
 (
@@ -77,9 +85,11 @@ echo "== 4. OCaml: compile axioms and the extracted module =="
   for m in decidable eq LeanArray nat int axioms; do
     $OCAMLOPT -I . -c "$m.mli" "$m.ml"
   done
-  # Malfunction silently emits an empty .cmi without an .mli, so compile it first.
-  $OCAMLOPT -c gate1.mli
-  $MALFUNCTION cmx gate1.mlf
+  for e in $ENTRIES; do
+    # Malfunction silently emits an empty .cmi without an .mli, so compile it first.
+    $OCAMLOPT -c "$e.mli"
+    $MALFUNCTION cmx "$e.mlf"
+  done
 )
 
 if [ -n "$OUT" ]; then
