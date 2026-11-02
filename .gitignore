@@ -2,6 +2,6 @@ domain/.lake/
 domain/build/
 domain/lake-manifest.json.bak
 third_party/
-bin/
+/bin/
 _build/
 ocaml/leancore/extracted/
