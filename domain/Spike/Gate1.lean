@@ -22,4 +22,4 @@ theorem gate1_odd (n : Nat) : gate1 n % 2 = 1 := by
 
 end Spike
 
-#erase Spike.gate1 to "build/gate1.ast" mli "build/gate1.mli"
+#erase Spike.gate1 config {remove_irrel_constr_args := true} to "build/gate1.ast" mli "build/gate1.mli"
