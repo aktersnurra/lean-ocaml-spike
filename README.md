@@ -7,41 +7,130 @@ trustworthy boundary, without maintaining a second implementation?
 Scope here is **Gate 1 only**: one trivial pure function, extracted and called from OCaml.
 Gates 2 and 3 are deliberately not scaffolded until Gate 1 passes.
 
-## Status
+## Status: Gate 1 FAILED (stop rule hit), 2026-11-02
 
 | Step | State |
 |------|-------|
-| Lean project builds on the pinned toolchain, proof checks, no `sorry` | verified (authoring sandbox) |
-| `#erase` emits `build/gate1.ast` and `build/gate1.mli` | verified (authoring sandbox) |
-| opam switches (peregrine, malfunction), `scripts/bootstrap.sh` | **not run** |
-| `peregrine compile` -> `.mlf` -> `malfunction cmx` -> link -> run | **not run** (`scripts/gate1.sh` steps 3-5) |
-| Dune executable linking the extracted object | **not started** (Gate 1b, see below) |
+| Lean project builds on v4.22.0, proof checks, no `sorry` | **pass** |
+| `#erase` emits `build/gate1.ast`, `.ast.inlinings`, `gate1.mli` | **pass** |
+| opam switches (`scripts/bootstrap.sh`) | **pass** (needed an environment-only download workaround, see below) |
+| `peregrine compile` (step 3) | **FAIL**: the frontend and Peregrine serialize integer literals differently |
+| Malfunction -> link -> run, Gate 1b (Dune) | not reached for `gate1`; the same path works on a literal-free diagnostic (below) |
 
-The authoring sandbox could not reach `opam.ocaml.org` or `rocq-prover.org`, so nothing past the
-Lean step has been executed. Treat steps 3-5 of `gate1.sh` as a transcription of the upstream
-Makefile, not as a tested script.
+### Exact failure
+
+```
+$ scripts/gate1.sh
+== 3. Peregrine: lambda-box -> Malfunction (.mlf) ==
+peregrine compile FAILED:
+Compiling:
+Could not compile:
+Failed parsing input program\ncould not read integral type, got a non-Num atom "2" at location 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0
+```
+
+`#erase` writes the literal `2` in `n * 2 + 1` as `(tPrim (primInt "2"))`, a quoted string
+(lean-to-lambdabox `LeanToLambdaBox/Printing.lean`, `instance Serialize (BitVec n)`).
+Peregrine changed its `primInt` deserializer from a string atom (`Atom_ (Str i)` -> `prim_int_of_string`)
+to a Ceres numeric atom in commit `556fe09` ("Use Ceres prim serializers", 2026-02-28). The
+frontend's last functional change is 2026-02-17, and **every** lean-to-lambdabox branch
+(18 checked, including `main` = our pin, `fixes-port`, `ml/*`, all on Lean 4.22-4.35) still
+emits the quoted form. So no frontend pin works with Peregrine at or after `556fe09`.
+Any real domain code has numeric literals, so this blocks the pipeline in general, not
+just this example.
+
+What would fix it, and why I stopped instead:
+- **One-line patch** to the frontend (`.atom i.repr` instead of a quoted string), or to
+  Peregrine (accept both). This is a patch, so the stop rule forbids it.
+- Rewriting the `.ast` with sed is a workaround, so also not done.
+- **Pin-only option:** move `PEREGRINE_REV` back to `6a3a043`, the parent of `556fe09`. That
+  revision needs a completely different stack: Rocq 9.0 (not 9.1), MetaRocq `1.4+9.0`,
+  `cmdliner < 2`, `coq-compcert 3.16`, and **8 `pin-depends` to dev commits, several on a
+  personal fork** (`4ever2/certicoq`, `4ever2/CompCert`, `4ever2/rocq-verified-extraction`, ...).
+  It is a version pin in form only; it rolls back eight months of Peregrine fixes and means a
+  multi-hour rebuild with unknown config-format drift. Not attempted; it needs a decision.
+
+### Diagnostic (not a Gate 1 result): everything after the literal works
+
+A literal-free probe `def diagDouble (n : Nat) : Nat := n + n` went through the identical
+pipeline (same config, axioms, switches): `peregrine compile` -> "Compiled successfully",
+`malfunction cmx`, link, `diagDouble (2^100) = 2^101` correct. So the integer-literal format
+is the **only** remaining blocker found at these pins. The probe was used only to find how far
+the incompatibility reaches; it is not committed as a way around it.
+
+### Scaffold changes and why
+
+1. `Spike/Gate1.lean`: `#erase ... config {remove_irrel_constr_args := true}`. The upstream
+   Makefile selects `decidable-pruned.ml` *only together with* that erasure option; the scaffold
+   used the pruned axiom without it.
+2. `LeanArray.ml` comes from `JCFArrayOCaml4.ml`, not `JCFArray.ml`. The latter uses `Stdlib.Dynarray`
+   (OCaml >= 5.2) and fails on 4.14.2 (`Unbound module Dynarray`). Upstream's own
+   `malfunction-ocaml4` backend makes the same choice. Upstream's reference config runs Malfunction on OCaml 5.
+3. Peregrine config: upstream `unbox.config` has a 7-field `erasure_phases`. Peregrine at the pin
+   accepts only 9 fields (`not enough fields, expected 9, got only 7`). `domain/peregrine.config`
+   is the same config migrated as Peregrine's `doc/format.md` prescribes (append `None None`).
+   This is an input file, not a tool patch.
+4. `scripts/gate1.sh` steps 1-4 moved to `scripts/extract.sh` (shared with Gate 1b). It no longer
+   sends Peregrine's output to `/dev/null`, because Peregrine prints errors on stdout; failures are now shown.
+5. Gate 1b scaffolding (`dune-project`, `dune`, `ocaml/leancore`, `ocaml/bin`, `scripts/gate1b.sh`),
+   untested end to end because step 3 fails. Approach, verified with a hand-written `.mlf` that
+   calls zarith: the README's `link_flags` idea **does not work**, because Dune puts link flags
+   *after* the executable's own modules (`No implementations provided for ... Fake`). What works:
+   a `leancore` library whose `library_flags` put the prebuilt `.cmx` files into
+   `leancore.cmxa` *ahead of* a hand-written boundary module. A rule copies the artefacts in,
+   and a generated copy of the boundary source carries the dependency. Clients can only see the
+   boundary module; the raw extracted module's `.cmi` is not exported.
+6. `versions.env`: **unchanged.**
+
+### Environment notes (not pipeline changes)
+
+- The sandbox proxy returns 403 for GitHub HTTP archive downloads
+  (`github.com/<o>/<r>/archive/*.tar.gz`) but allows git. 21 Rocq-side opam packages fetch such
+  archives. `scripts/seed-opam-cache.sh` rebuilds each one from its git tag with
+  `git archive | gzip -cn`, **checks it against the opam checksum**, and only then puts it in
+  `~/.opam/download-cache`. All 21 matched byte for byte, so no versions or checksums changed.
+  It is not needed where GitHub archives are reachable.
+- Building the peregrine switch (82 packages: Rocq, MetaRocq, CertiRocq, CompCert, ...) takes a long
+  time on 4 cores.
+- opam 2.1.5 (Ubuntu 24.04 package), run as root with `OPAMROOTISOK=1`, `--disable-sandboxing`.
+
+### Versions actually installed
+
+| Component | Version |
+|-----------|---------|
+| Lean | 4.22.0 (`ba2cbbf`), elan 4.2.4 |
+| lean-to-lambdabox | `58701f8` (= `main` HEAD) |
+| peregrine-tool | `2984751` (= `master` HEAD, 2026-11-02) |
+| rocq-core / rocq-stdlib | 9.1.1 / 9.0.0 |
+| MetaRocq erasure, CertiRocq, verified-extraction | 1.5.1+9.1, 0.9.1+9.1, 1.0.0+9.1 |
+| OCaml (both switches) | 4.14.2+options with flambda |
+| malfunction | 0.7.1 (`1682ecd`) |
+| zarith, ocamlfind, dune | 1.14, 1.9.8, 3.24.2 |
 
 ## Run it
 
 ```bash
-scripts/bootstrap.sh   # opam switches; first run will likely need constraint fixes
-scripts/gate1.sh       # Lean check + extraction + link + smoke test
+scripts/bootstrap.sh                                   # opam switches
+scripts/seed-opam-cache.sh spike-peregrine <pkgs...>   # only if GitHub archives are blocked
+scripts/gate1.sh                                       # Gate 1a: currently fails at step 3
+scripts/gate1b.sh                                      # Gate 1b: Dune executable (needs 1a's step 3)
 ```
 
-Needs `elan` (or Lean v4.22.0 on PATH), `opam`, `git`, `gcc`, `libgmp-dev`.
-Pins live in `versions.env`.
+Needs `elan`, `opam`, `git`, `gcc`, `libgmp-dev`. Pins live in `versions.env`.
 
 **Stop rule:** if Gate 1 needs patches to Peregrine, the Lean frontend, or Malfunction beyond
-version pins, stop and record exactly what broke. Do not start Gate 2.
+version pins, stop and record exactly what broke. Do not start Gate 2. (Hit; see above.)
 
-## Gate 1b: Dune
+## Early reads for later gates (not started, recorded so they are not lost)
 
-`gate1.sh` links with `ocamlfind ocamlopt`, as the upstream benchmarks do. The Gate 1 criterion
-also asks for a Dune executable. Suggested approach once 1a passes: a `rule` that runs steps 1-4
-and produces `gate1.cmx`, `gate1.o`, `gate1.cmi` plus the axiom objects in one directory, then an
-`executable` that adds that directory with `-I` and the `.cmx` files via `link_flags`. Whether
-Dune accepts prebuilt `.cmx` files this way is untested; if it does not, an `(extra_objects)`
-stanza or an opam-installed library built from the generated sources are the fallbacks.
+- **Gate 2 (Lean side only, nothing linked):** `List Nat -> List Nat` erases with only Nat axioms,
+  and the generated mli is `val main: Z.t list -> Z.t list`. The mli generator only knows `Nat`,
+  `Unit`, `Bool` and `List`; anything else becomes `unit` with a warning. `UInt8`, `ByteArray` and
+  `String` erase to new `@[extern]` axioms (`UInt8.ofNat/toNat`, `ByteArray.size/get!`,
+  `String.data`, `Char.ofNatAux`, ...) that no shipped runtime file provides. String literals
+  make the frontend panic (`"String literals not supported."`).
+- **Gate 3, OCaml 5:** malfunction's opam file says `ocaml < 5.0.0`, but its history has
+  "OCaml 5.2 support" and "OCaml 5.3 support", and upstream benchmarks run it on OCaml 5. The
+  domain-concurrency test would need an OCaml 5 Malfunction switch, so this should be checked early.
 
 ## What reading the sources already told us (not yet tested)
 
@@ -73,10 +162,17 @@ itself depends on none. No `sorry`, no `Classical.choice`.
 ## Layout
 
 ```
-versions.env            pinned revisions and switch names
-domain/                 Lean 4 project (toolchain v4.22.0) with the frontend as a git dependency
-  Spike/Gate1.lean      gate1 n = 2n + 1, proof it is odd, #erase to build/
-scripts/bootstrap.sh    opam switches (unverified)
-scripts/gate1.sh        full Gate 1 pipeline and smoke test (steps 3-5 unverified)
-app/main.ml             OCaml harness calling Gate1.main
+versions.env               pinned revisions and switch names (unchanged)
+domain/                    Lean 4 project (v4.22.0) with the frontend as a git dependency
+  Spike/Gate1.lean         gate1 n = 2n + 1, proof it is odd, #erase to build/
+  peregrine.config         Peregrine config (upstream unbox.config, 9-field form)
+scripts/bootstrap.sh       opam switches
+scripts/seed-opam-cache.sh environment workaround for blocked GitHub archives (checksum-verified)
+scripts/extract.sh         pipeline steps 1-4 (Lean -> .ast -> .mlf -> .cmx), optional copy-out dir
+scripts/gate1.sh           Gate 1a: extract + ocamlfind link + smoke test
+scripts/gate1b.sh          Gate 1b: extract + Dune build + smoke test
+app/main.ml                Gate 1a harness calling Gate1.main
+dune-project, dune         Dune project root (OCaml side only)
+ocaml/leancore/            Dune library: imported extracted objects + boundary module Leancore
+ocaml/bin/                 Gate 1b Dune executable using Leancore
 ```

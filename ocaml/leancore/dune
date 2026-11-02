@@ -1,0 +1,46 @@
+; Gate 1b: wrap the Peregrine/Malfunction output in an ordinary Dune library.
+;
+; scripts/extract.sh ocaml/leancore/extracted   (run first; needs the opam switches + Lean)
+; produces .cmx/.o/.cmi files that Dune cannot build itself (Malfunction is not a Dune
+; language). The rule below imports them; library_flags puts them into leancore.cmxa
+; *ahead of* the boundary module, which is the only module clients can see.
+
+(rule
+ (targets decidable.cmx decidable.o decidable.cmi eq.cmx eq.o eq.cmi LeanArray.cmx LeanArray.o LeanArray.cmi nat.cmx nat.o nat.cmi int.cmx int.o int.cmi axioms.cmx axioms.o axioms.cmi gate1.cmx gate1.o gate1.cmi)
+ (deps extracted/decidable.cmx extracted/decidable.o extracted/decidable.cmi extracted/eq.cmx extracted/eq.o extracted/eq.cmi extracted/LeanArray.cmx extracted/LeanArray.o extracted/LeanArray.cmi extracted/nat.cmx extracted/nat.o extracted/nat.cmi extracted/int.cmx extracted/int.o extracted/int.cmi extracted/axioms.cmx extracted/axioms.o extracted/axioms.cmi extracted/gate1.cmx extracted/gate1.o extracted/gate1.cmi)
+ (action (progn
+   (copy extracted/decidable.cmx decidable.cmx)
+   (copy extracted/decidable.o decidable.o)
+   (copy extracted/decidable.cmi decidable.cmi)
+   (copy extracted/eq.cmx eq.cmx)
+   (copy extracted/eq.o eq.o)
+   (copy extracted/eq.cmi eq.cmi)
+   (copy extracted/LeanArray.cmx LeanArray.cmx)
+   (copy extracted/LeanArray.o LeanArray.o)
+   (copy extracted/LeanArray.cmi LeanArray.cmi)
+   (copy extracted/nat.cmx nat.cmx)
+   (copy extracted/nat.o nat.o)
+   (copy extracted/nat.cmi nat.cmi)
+   (copy extracted/int.cmx int.cmx)
+   (copy extracted/int.o int.o)
+   (copy extracted/int.cmi int.cmi)
+   (copy extracted/axioms.cmx axioms.cmx)
+   (copy extracted/axioms.o axioms.o)
+   (copy extracted/axioms.cmi axioms.cmi)
+   (copy extracted/gate1.cmx gate1.cmx)
+   (copy extracted/gate1.o gate1.o)
+   (copy extracted/gate1.cmi gate1.cmi))))
+
+; Dune only knows about the imported objects through this generated copy of the boundary
+; source, which depends on them (a library stanza has no deps field).
+(rule
+ (target leancore.ml)
+ (deps leancore.ml.in decidable.cmx decidable.o decidable.cmi eq.cmx eq.o eq.cmi LeanArray.cmx LeanArray.o LeanArray.cmi nat.cmx nat.o nat.cmi int.cmx int.o int.cmi axioms.cmx axioms.o axioms.cmi gate1.cmx gate1.o gate1.cmi)
+ (action (copy leancore.ml.in leancore.ml)))
+
+(library
+ (name leancore)
+ (modes native)
+ (libraries zarith)
+ (flags (:standard -I ocaml/leancore))
+ (library_flags (:standard ocaml/leancore/decidable.cmx ocaml/leancore/eq.cmx ocaml/leancore/LeanArray.cmx ocaml/leancore/nat.cmx ocaml/leancore/int.cmx ocaml/leancore/axioms.cmx ocaml/leancore/gate1.cmx)))

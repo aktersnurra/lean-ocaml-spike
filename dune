@@ -1,0 +1,2 @@
+; Only the OCaml side is a Dune project; keep Dune out of the Lean tree and tool caches.
+(dirs ocaml)

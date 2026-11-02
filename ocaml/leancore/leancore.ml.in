@@ -1,0 +1,13 @@
+(* Boundary for the Gate 1 extracted core. This is the only module clients of the
+   [leancore] library can see; the raw extracted module [Gate1] (and the runtime axiom
+   modules) are linked into the library archive but their .cmi files are not exported.
+
+   The generated gate1.mli ("val main: Z.t -> Z.t") is asserted, not checked: Malfunction
+   does not type-check the extracted code against it. So this boundary enforces the Lean
+   type (Nat = non-negative integer) on the way in and checks it on the way out. *)
+
+let gate1 (n : Z.t) : Z.t =
+  if Z.sign n < 0 then invalid_arg "Leancore.gate1: argument must be a Nat (>= 0)";
+  let r = Gate1.main n in
+  if Z.sign r < 0 then failwith "Leancore.gate1: extracted code returned a negative Nat";
+  r
