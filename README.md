@@ -64,7 +64,7 @@ third_party bin ocaml/leancore/extracted`, then the CI sequence below), 2026-11-
 | OCaml 5 domain concurrency | 8 domains × 50,000 calls, each checked against native: 0 wrong, 0 exceptions | `ocaml/conc/domains_stress.ml`, `scripts/gate3-ocaml5.sh` |
 | Eio fibers (separate test) | 1,000 fibers on one domain + 4 domains × 100 fibers via `Domain_manager`, 200,000 calls: 0 wrong | `ocaml/conc/eio_stress.ml` |
 | Benchmark vs native (target ≤ 10x) | **1.0x–3.5x** on OCaml 4.14, **1.0x–3.8x** on OCaml 5.3 (table below) | `ocaml/bench/bench.ml` |
-| Clean-build reproducibility in CI | `.github/workflows/ci.yml` written; **not yet run on GitHub** (no remote). The identical step sequence passes locally from a clean tree | |
+| Clean-build reproducibility in CI | **Passed on GitHub Actions** (ubuntu-24.04, 4 vCPU), cold: [run 41528451917](https://github.com/aktersnurra/lean-ocaml-spike/actions/runs/41528451917), 1h31m total, of which bootstrap 88 min and all gates under 2 min | `.github/workflows/ci.yml` |
 | Runtime axioms minimal, documented, tested | 8 Nat axioms (below); `scripts/audit.sh` fails if the set changes; every test above exercises them | `scripts/runtime-axioms.txt` |
 | Proof axioms audited | every theorem: `[propext, Quot.sound]`; `Spike.gate1`: none; `Spike.Wire.handle`: `[propext, Quot.sound]` (from `Lean.RBMap`'s well-formedness proof field, erased) | `domain/Spike/Audit.lean`, `scripts/audit.sh` |
 
@@ -163,7 +163,7 @@ only a test oracle and benchmark baseline). Conditions:
   That is worth building once the toolchain pair is stable.
 - Before that: (1) get the upstream answer on the frontend/Peregrine pairing and, if needed,
   set up the pinned fork; (2) run the CI workflow on GitHub once to confirm cold-build time and
-  caching. Then start the generator, with codec proofs (`decode (encode x) = x`) as part of its
+  caching (done: cold run passes in 1h31m, see Gate 3 table). Then start the generator, with codec proofs (`decode (encode x) = x`) as part of its
   output, as done by hand here.
 
 ## Gate 2: opaque byte boundary, PASS (option (a)); option (b) also works but is not recommended
@@ -373,7 +373,7 @@ domain/Spike/Audit.lean    #print axioms list
 ocaml/native/              native OCaml implementation (test oracle + benchmark baseline only)
 ocaml/bench/               benchmark
 ocaml/conc/                OCaml 5 domain and Eio stress tests
-.github/workflows/ci.yml   clean-build CI (not yet run on GitHub)
+.github/workflows/ci.yml   clean-build CI (passes on GitHub Actions)
 ocaml/test/                Gate 2 boundary tests
 experiments/gate2b/        option (b) probe: ByteArray + hand-written axioms
 app/main.ml                Gate 1a harness calling Gate1.main
