@@ -14,9 +14,9 @@ scripts/extract.sh
 
 echo "== 5. Link with ocamlfind ocamlopt =="
 mkdir -p "$ROOT/bin"
-cp "$ROOT/app/main.ml" "$BUILD/gate1_main.ml"
+cp "$ROOT/app/main.ml" "$BUILD/ocaml-$MALFUNCTION_SWITCH/gate1_main.ml"
 (
-  cd "$BUILD"
+  cd "$BUILD/ocaml-$MALFUNCTION_SWITCH"
   $OCAMLOPT -I . -linkpkg decidable.cmx eq.cmx LeanArray.cmx nat.cmx int.cmx axioms.cmx \
     gate1.cmx gate1_main.ml -o "$ROOT/bin/gate1"
 )

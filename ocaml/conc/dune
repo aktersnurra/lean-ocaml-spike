@@ -1,0 +1,15 @@
+; OCaml 5 only: domain-parallel and Eio fiber stress tests of Leancore.call.
+; Build with the spike-ocaml5 switch (scripts/gate3-ocaml5.sh).
+(executable
+ (name domains_stress)
+ (modules domains_stress)
+ (modes native)
+ (enabled_if (>= %{ocaml_version} 5.0))
+ (libraries zarith unix leancore native_core))
+
+(executable
+ (name eio_stress)
+ (modules eio_stress)
+ (modes native)
+ (enabled_if (>= %{ocaml_version} 5.0))
+ (libraries zarith unix eio_main leancore native_core))

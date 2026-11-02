@@ -84,7 +84,7 @@ theorem handle_priceOrder (o : Order) :
   have hb : allBytes (2 :: encodeOrder o) = true := by
     simp [allBytes, allBytes_encodeOrder]
   simp only [handle, hb, if_true, dispatch, exact_decodeOrder_encodeOrder]
-  simp only [show (2 : Nat) ≠ 1 by decide, if_false, if_true]
+  simp only [show (2 : Nat) ≠ 1 by decide, if_false]
   split <;> simp_all [respond]
 
 /-! Kernel-checked examples (erased before extraction). `notBytes` cannot be produced from

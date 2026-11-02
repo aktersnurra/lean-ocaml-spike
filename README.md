@@ -7,7 +7,18 @@ trustworthy boundary, without maintaining a second implementation?
 Scope here is **Gate 1 only**: one trivial pure function, extracted and called from OCaml.
 Gates 2 and 3 are deliberately not scaffolded until Gate 1 passes.
 
-## Status: Gate 1 PASS with one approved deviation (frontend patch), 2026-11-02
+## Status (2026-11-02): Gates 1, 2, 3 PASS, with one approved deviation (frontend patch)
+
+See "Gate 3" for results and "Verdict" for the recommendation. CI sequence (after `scripts/bootstrap.sh`):
+
+```bash
+scripts/gate1.sh && scripts/gate1b.sh            # Gate 1: extraction, ocamlfind link, Dune link
+scripts/gate2.sh && experiments/gate2b/run.sh    # Gate 2: byte boundary (a), probe (b)
+scripts/gate3.sh                                 # Gate 3: tests, differential fuzz, audit, benchmark
+scripts/gate3-ocaml5.sh                          # Gate 3: OCaml 5 domains + Eio, benchmark
+```
+
+### Gate 1 details
 
 | Step | State |
 |------|-------|
@@ -36,6 +47,124 @@ scripts/gate1b.sh   # Gate 1b
 
 Boundary check: if `ocaml/bin/main.ml` calls `Gate1.main` directly, the build fails with
 `Error: Unbound module Gate1`. Only `Leancore` is visible to clients.
+
+## Gate 3: correctness and robustness, PASS
+
+All commands pass from a clean tree (`rm -rf domain/.lake domain/build _build _build_ocaml5
+third_party bin ocaml/leancore/extracted`, then the CI sequence below), 2026-11-02.
+
+| Criterion | Result | Where |
+|-----------|--------|-------|
+| Representative pure domain function | `Spike.Order.priceOrder`: validation with 4 domain errors, nested data (order → lines), unbounded arithmetic | `domain/Spike/Order.lean` |
+| `decode (encode x) = x` proved | Order (request) and Quote (response); generic varint and list lemmas | `exact_decodeOrder_encodeOrder`, `exact_decodeQuote_encodeQuote` |
+| Extra proofs | `priceOrder_ok` (total + discount = subtotal, discount ≤ subtotal, ...), `allBytes_handle` (every response is bytes, so the OCaml byte check can only fire if the trusted base is broken), `handle_priceOrder` (handle on an encoded order = encoded `priceOrder` result) | `Order.lean`, `Gate2.lean` |
+| Malformed input terminates with an encoded error | 200,000 fuzz inputs (mutated valid orders + random bytes): all well formed, 0 exceptions. Adversarial: count 2^60 on short input, 1 MB unterminated varint, 1,000,000-line orders all return encoded results in ≤ 1.7 s | `ocaml/test/test_gate3.ml` |
+| Differential test vs native | byte-for-byte identical responses on all 200,000 fuzz inputs and 20,000 random valid orders | same |
+| Round trip for every boundary constructor | both ops, ok response, every error code (1,3,4,5,16-19; 2 is kernel-checked in Lean since real bytes cannot trigger it), validation precedence, bignums | same + `example`s in `Gate2.lean` |
+| OCaml 5 domain concurrency | 8 domains × 50,000 calls, each checked against native: 0 wrong, 0 exceptions | `ocaml/conc/domains_stress.ml`, `scripts/gate3-ocaml5.sh` |
+| Eio fibers (separate test) | 1,000 fibers on one domain + 4 domains × 100 fibers via `Domain_manager`, 200,000 calls: 0 wrong | `ocaml/conc/eio_stress.ml` |
+| Benchmark vs native (target ≤ 10x) | **1.0x–3.5x** on OCaml 4.14, **1.0x–3.8x** on OCaml 5.3 (table below) | `ocaml/bench/bench.ml` |
+| Clean-build reproducibility in CI | `.github/workflows/ci.yml` written; **not yet run on GitHub** (no remote). The identical step sequence passes locally from a clean tree | |
+| Runtime axioms minimal, documented, tested | 8 Nat axioms (below); `scripts/audit.sh` fails if the set changes; every test above exercises them | `scripts/runtime-axioms.txt` |
+| Proof axioms audited | every theorem: `[propext, Quot.sound]`; `Spike.gate1`: none; `Spike.Wire.handle`: `[propext, Quot.sound]` (from `Lean.RBMap`'s well-formedness proof field, erased) | `domain/Spike/Audit.lean`, `scripts/audit.sh` |
+
+### Benchmark (ns per call, best of 5, both sides flambda `-O3`, same machine)
+
+| case | Lean (OCaml 4.14) | native | ratio | Lean (OCaml 5.3) | native | ratio |
+|------|------:|------:|-----:|------:|------:|-----:|
+| gate1 n=123456 | 110 | 34 | 3.2 | 119 | 46 | 2.6 |
+| order, 1 line | 279 | 110 | 2.5 | 299 | 134 | 2.2 |
+| order, 10 lines | 1,391 | 510 | 2.7 | 1,567 | 552 | 2.8 |
+| order, 100 lines | 18,627 | 5,751 | 3.2 | 19,739 | 6,093 | 3.2 |
+| order, 1,000 lines | 345,134 | 99,194 | 3.5 | 359,584 | 95,251 | 3.8 |
+| order, 10,000 lines | 5,606,570 | 1,897,349 | 3.0 | 5,794,370 | 1,693,380 | 3.4 |
+| malformed (truncated) | 65 | 63 | 1.0 | 71 | 71 | 1.0 |
+
+The Lean column includes the boundary's `bytes <-> Z.t list` conversion. The native baseline
+uses Zarith (needed for byte-identical semantics) and a `Hashtbl` duplicate check; a version
+with native `int` would be faster still. **Build flags matter:** without flambda `-O3` the
+extracted core was 7.6x–13x native (which fails the target). Peregrine's optional
+`specialize_instances`/`cse` passes made no measurable difference on top of `-O3`.
+
+### Problems Gate 3 found, and fixes (all in Lean or the build, no tool patches)
+
+1. **Stack overflow on long input.** Non-tail-recursive Lean decoders became non-tail-recursive
+   OCaml: a 1 MB varint raised `Stack_overflow` *out of* `Leancore.call` instead of returning an
+   encoded error. Fix in Lean: a tail-recursive `terminated` scan rejects unterminated varints
+   in linear time with no bignum, then tail-recursive accumulators decode varints and lists
+   (`decodeNatAux`, `decodeElemsAux`); `subtotal` and the other traversals are tail recursive
+   too. Proofs redone. **Lesson: the stack shape of the Lean definition is the stack shape of
+   the extracted code; attacker-sized recursion must be written tail recursive.**
+2. **Quadratic duplicate check.** 100,000 lines took 87 s with the list-based check. Rewritten
+   with `Lean.RBMap` (core library red-black tree): 0.14 s. It extracts with **no new runtime
+   axioms**, so library data structures written with structural recursion are usable.
+   `Std.HashMap` was not tried (hashing goes through `UInt64` externs).
+3. **Stale link in the Gate 1b Dune design.** `library_flags` registers no dependencies, so
+   after re-extraction Dune's early cutoff kept the old `leancore.cmxa`, and the tests ran the
+   *previous* core (op 2 answered `unknownOp`). The raw extracted module was correct. Fix: the
+   generated boundary source embeds a digest of the imported objects. Any production
+   integration must make re-extraction invalidate the link, and should test that it does.
+4. **Toolchain:** OCaml 5 needs malfunction installed with `--ignore-constraints-on=ocaml` (stale
+   `ocaml < 5.0` constraint, source supports 5.3), the `JCFArray.ml` array axiom (Dynarray), and
+   all packages in one `opam install` (a later install silently removed malfunction).
+
+### Runtime axiom surface (trusted, unverified)
+
+The extracted core references exactly these OCaml functions (`scripts/runtime-axioms.txt`,
+enforced by `scripts/audit.sh`), all from upstream `nat-inline.ml` at `L2L_REV`, with Lean
+`Nat` = Zarith `Z.t`:
+
+| Axiom | OCaml implementation | Exercised by |
+|-------|----------------------|--------------|
+| `Nat.add`, `Nat.sub`, `Nat.mul` | `Z.add`; `if n <= m then 0 else Z.sub n m` (saturating, as Lean); `Z.mul` | varint decode, subtotal, discount |
+| `Nat.div`, `Nat.mod` | `if m = 0 then 0 else Z.ediv n m`; `if m = 0 then n else Z.erem n m` (Lean's division-by-zero semantics) | varint encode (`/128`, `%128`), discount `/100` |
+| `Nat.beq`, `Nat.decEq`, `Nat.decLt` | `Z.equal`, `Z.lt` → `Decidable` via `dec_of_bool` | op dispatch, byte/terminator checks, RBMap compare |
+
+Also linked but not referenced: `Int`, `Eq`, `LeanArray` (Filliâtre's persistent arrays, which
+**mutate internally**; not safe to share across domains, unused by this core).
+
+### Trust assumptions after Gate 3
+
+- **Trusted, unproven:** the lean-to-lambdabox erasure (plus our one-line printer patch),
+  Peregrine (its middle-end is verified in Rocq, but end-to-end verification of the pipeline
+  is not claimed by its authors), Malfunction and the OCaml compiler with flambda `-O3`, the 8
+  runtime axioms and Zarith, and the ~20-line `Leancore` boundary.
+- **Asserted, unchecked:** the generated `.mli` (`Z.t list -> Z.t list`). The boundary checks
+  the transport invariant on every response; `allBytes_handle` proves the check never fires
+  unless the trusted base is wrong.
+- **Proved in Lean:** codec round trips, domain invariants, response is bytes, and the
+  end-to-end spec of `handle` for well-formed orders. Erased before extraction.
+- **Resource limits are not in the proofs.** Big inputs terminate, but costs are polynomial in
+  input size (bignum arithmetic on long varints is quadratic, also natively). Put a request size
+  cap in the transport layer.
+
+## Verdict
+
+**Is Peregrine viable for a greenfield Lean-first domain core? Yes, with conditions.**
+The core idea works: one Lean implementation, proved, extracted to native OCaml, called
+through a small opaque `bytes -> bytes` boundary, 1–4x native speed, correct under fuzzing,
+domain parallelism and Eio. No duplicate implementation is needed (the native one here is
+only a test oracle and benchmark baseline). Conditions:
+1. **Pin the frontend and Peregrine as a pair, and own a fork or patch queue.** They drifted
+   on two serialization formats (integer literals, config fields) at their own HEADs, and no
+   frontend branch matched current Peregrine. Upstream's answer to the issue matters
+   (`docs/upstream-issue-primint.md`).
+2. **Write the core in a disciplined fragment:** total, structural, tail recursive over
+   input-sized data, `Nat`/`List`/inductives/`Lean.RBMap`; no `String` literals, no
+   `ByteArray`/`UInt*`/`Float` (each needs new trusted axioms), no well-founded recursion
+   (untested here). Keep the wire format in Lean.
+3. **Build discipline:** flambda `-O3`, re-extraction must invalidate the link, and a large
+   toolchain (the Rocq stack takes hours cold; cache it in CI).
+
+**Should we proceed to a Lean-derived interface generator? Not yet; first two small steps.**
+- The hand-written parts of the boundary are already tiny (`Leancore.call` plus a client-side
+  decoder). The generator's value is the *client side*: OCaml types and decoders for responses
+  (and encoders for requests) generated from the Lean types, so the wire format has one source.
+  That is worth building once the toolchain pair is stable.
+- Before that: (1) get the upstream answer on the frontend/Peregrine pairing and, if needed,
+  set up the pinned fork; (2) run the CI workflow on GitHub once to confirm cold-build time and
+  caching. Then start the generator, with codec proofs (`decode (encode x) = x`) as part of its
+  output, as done by hand here.
 
 ## Gate 2: opaque byte boundary, PASS (option (a)); option (b) also works but is not recommended
 
@@ -137,7 +266,7 @@ the incompatibility reaches; it is not committed as a way around it.
    and a generated copy of the boundary source carries the dependency. Clients can only see the
    boundary module; the raw extracted module's `.cmi` is not exported.
 6. `patches/l2l-primint-numeric.patch` (approved deviation, see Status).
-7. `versions.env`: **unchanged.**
+7. `versions.env`: unchanged for Gates 1-2; Gate 3 added the OCaml 5 switch (`OCAML5_*`, `EIO_VERSION`).
 
 ### Environment notes (not pipeline changes)
 
@@ -233,7 +362,18 @@ scripts/extract.sh         pipeline steps 1-4 (Lean -> .ast -> .mlf -> .cmx), op
 scripts/gate1.sh           Gate 1a: extract + ocamlfind link + smoke test
 scripts/gate1b.sh          Gate 1b: extract + Dune build + smoke test
 scripts/gate2.sh           Gate 2: extract + Dune build + boundary tests and fuzz
-domain/Spike/Gate2.lean    wire protocol (List Nat transport), extracted as Gate2
+scripts/gate3.sh           Gate 3: tests, differential fuzz, audit, benchmark (OCaml 4.14)
+scripts/gate3-ocaml5.sh    Gate 3: OCaml 5 build, domain + Eio stress, benchmark
+scripts/audit.sh           proof-axiom, forbidden-construct and runtime-axiom audit
+scripts/runtime-axioms.txt the allowed runtime (OCaml) axiom set
+domain/Spike/Wire.lean     varint/list codecs + round-trip lemmas
+domain/Spike/Order.lean    domain: priceOrder, invariants, Order/Quote codecs + round trips
+domain/Spike/Gate2.lean    handle (extracted as Gate2), end-to-end theorems
+domain/Spike/Audit.lean    #print axioms list
+ocaml/native/              native OCaml implementation (test oracle + benchmark baseline only)
+ocaml/bench/               benchmark
+ocaml/conc/                OCaml 5 domain and Eio stress tests
+.github/workflows/ci.yml   clean-build CI (not yet run on GitHub)
 ocaml/test/                Gate 2 boundary tests
 experiments/gate2b/        option (b) probe: ByteArray + hand-written axioms
 app/main.ml                Gate 1a harness calling Gate1.main

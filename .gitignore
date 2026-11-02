@@ -5,3 +5,4 @@ third_party/
 /bin/
 _build/
 ocaml/leancore/extracted/
+_build_ocaml5/

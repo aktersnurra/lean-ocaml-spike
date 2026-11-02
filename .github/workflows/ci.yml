@@ -1,0 +1,40 @@
+# Clean build of the whole spike with the pinned toolchain (versions.env), then every gate.
+# NOT YET RUN on GitHub (the spike has no remote); the same steps pass locally from a clean
+# tree (see README "Clean-build reproducibility"). The opam root is cached on the hash of
+# versions.env + bootstrap.sh because the peregrine switch (Rocq, MetaRocq, CertiRocq,
+# CompCert: 82 packages) takes hours to build cold.
+name: ci
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  spike:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      OPAMYES: "1"
+      OPAMCONFIRMLEVEL: unsafe-yes
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y opam libgmp-dev bubblewrap m4 pkg-config unzip rsync
+      - name: Restore opam root
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: opam-${{ runner.os }}-${{ hashFiles('versions.env', 'scripts/bootstrap.sh') }}
+      - name: opam init
+        run: test -d ~/.opam || opam init --bare --disable-sandboxing -n -y
+      - name: elan (Lean toolchain from domain/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap opam switches
+        run: scripts/bootstrap.sh
+      - name: Gate 1a (ocamlfind link) and 1b (Dune)
+        run: scripts/gate1.sh && scripts/gate1b.sh
+      - name: Gate 2 (byte boundary)
+        run: scripts/gate2.sh && experiments/gate2b/run.sh
+      - name: Gate 3 (tests, differential fuzz, audit, benchmark)
+        run: scripts/gate3.sh
+      - name: Gate 3 OCaml 5 (domains, Eio)
+        run: scripts/gate3-ocaml5.sh

@@ -54,4 +54,5 @@
  (modes native)
  (libraries zarith)
  (flags (:standard -I ocaml/leancore))
+ (ocamlopt_flags (:standard -O3))
  (library_flags (:standard ocaml/leancore/decidable.cmx ocaml/leancore/eq.cmx ocaml/leancore/LeanArray.cmx ocaml/leancore/nat.cmx ocaml/leancore/int.cmx ocaml/leancore/axioms.cmx ocaml/leancore/gate1.cmx ocaml/leancore/gate2.cmx)))

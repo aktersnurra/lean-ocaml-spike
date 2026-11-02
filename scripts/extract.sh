@@ -19,6 +19,9 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 . versions.env
 export PATH="$HOME/.elan/bin:$PATH"
+# SPIKE_MALFUNCTION_SWITCH overrides the switch used to compile the OCaml side (e.g. the
+# OCaml 5 switch spike-ocaml5 for the domain-concurrency tests). The .mlf is the same.
+MALFUNCTION_SWITCH="${SPIKE_MALFUNCTION_SWITCH:-$MALFUNCTION_SWITCH}"
 
 BUILD="$ROOT/domain/build"
 TP="$ROOT/third_party/l2l"
@@ -27,6 +30,11 @@ MALFUNCTION="opam exec --switch=$MALFUNCTION_SWITCH -- malfunction"
 OCAMLOPT="opam exec --switch=$MALFUNCTION_SWITCH -- ocamlfind ocamlopt -package zarith"
 ENTRIES="gate1 gate2"
 MODULES="decidable eq LeanArray nat int axioms $ENTRIES"
+# Compiled OCaml objects go in a per-switch directory; Lean/Peregrine outputs are shared.
+OBJ="$BUILD/ocaml-$MALFUNCTION_SWITCH"
+OCAML_VERSION="$(opam exec --switch="$MALFUNCTION_SWITCH" -- ocamlfind ocamlopt -version)"
+# Array axiom: upstream's default JCFArray.ml needs Stdlib.Dynarray (OCaml >= 5.2).
+case "$OCAML_VERSION" in 4.*|5.0.*|5.1.*) ARRAYML=JCFArrayOCaml4.ml ;; *) ARRAYML=JCFArray.ml ;; esac
 
 echo "== 1. Lean: check proofs, erase to lambda-box =="
 mkdir -p "$BUILD"
@@ -63,7 +71,7 @@ cp "$VM/decidable.mli" "$BUILD/decidable.mli"; cp "$VM/decidable-pruned.ml" "$BU
 cp "$VM/eq.mli"        "$BUILD/eq.mli";        cp "$VM/eq-inline.ml"        "$BUILD/eq.ml"
 cp "$VM/nat.mli"       "$BUILD/nat.mli";       cp "$VM/nat-inline.ml"       "$BUILD/nat.ml"
 cp "$VM/int.mli"       "$BUILD/int.mli";       cp "$VM/int-inline.ml"       "$BUILD/int.ml"
-cp "$VM/LeanArray.mli" "$BUILD/LeanArray.mli"; cp "$VM/JCFArrayOCaml4.ml"   "$BUILD/LeanArray.ml"
+cp "$VM/LeanArray.mli" "$BUILD/LeanArray.mli"; cp "$VM/$ARRAYML"            "$BUILD/LeanArray.ml"
 cp "$VM/axioms.mli"    "$BUILD/axioms.mli";    cp "$VM/axioms.ml"           "$BUILD/axioms.ml"
 # Peregrine config: upstream's unbox.config (7-field erasure_phases) migrated to the 9-field
 # form Peregrine requires at PEREGRINE_REV, as documented in its doc/format.md ("append None None").
@@ -79,9 +87,15 @@ for e in $ENTRIES; do
   fi
 done
 
-echo "== 4. OCaml: compile axioms and the extracted module =="
+echo "== 4. OCaml ($OCAML_VERSION, switch $MALFUNCTION_SWITCH, $ARRAYML): compile axioms and extracted modules =="
+rm -rf "$OBJ"; mkdir -p "$OBJ"
+# flambda -O3 for the axioms and the Malfunction-compiled modules (Gate 3 benchmark: 3-8x
+# faster than the default). Upstream's malfunction-ocaml4 backend uses OCAMLPARAM=_,O2=1.
+export OCAMLPARAM="${OCAMLPARAM:-_,O3=1}"
+for m in decidable eq LeanArray nat int axioms; do cp "$BUILD/$m.mli" "$BUILD/$m.ml" "$OBJ/"; done
+for e in $ENTRIES; do cp "$BUILD/$e.mli" "$BUILD/$e.mlf" "$OBJ/"; done
 (
-  cd "$BUILD"
+  cd "$OBJ"
   for m in decidable eq LeanArray nat int axioms; do
     $OCAMLOPT -I . -c "$m.mli" "$m.ml"
   done
@@ -93,6 +107,6 @@ echo "== 4. OCaml: compile axioms and the extracted module =="
 )
 
 if [ -n "$OUT" ]; then
-  for m in $MODULES; do cp "$BUILD/$m.cmx" "$BUILD/$m.o" "$BUILD/$m.cmi" "$OUT/"; done
+  for m in $MODULES; do cp "$OBJ/$m.cmx" "$OBJ/$m.o" "$OBJ/$m.cmi" "$OUT/"; done
   echo "artefacts copied to $OUT"
 fi

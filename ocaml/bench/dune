@@ -1,0 +1,5 @@
+(executable
+ (name bench)
+ (modes native)
+ (libraries zarith unix leancore native_core)
+ (ocamlopt_flags (:standard -O3)))
