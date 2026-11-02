@@ -1,93 +1,107 @@
 import LeanToLambdaBox
 import Spike.Gate1
+import Spike.Wire
+import Spike.Order
 
 /-!
-Gate 2: an opaque byte boundary, option (a): bytes are `List Nat` with every element in 0..255.
+The extracted byte boundary (module `Gate2` on the OCaml side).
 
-The extracted entry point is `main : List Nat → List Nat` (OCaml: `Z.t list -> Z.t list`).
-All parsing and serialization happens here, in Lean. The OCaml side only converts
-`bytes <-> Z.t list` and checks the transport invariant (every element is a byte); it
-never looks at domain values or decides on errors.
+`handle : List Nat → List Nat` (OCaml: `Z.t list -> Z.t list`). All parsing, dispatch,
+serialization and error tagging happen here. The OCaml side only converts
+`bytes <-> Z.t list` and checks that each element is a byte.
 
-Wire format v0 (all integers are unsigned LEB128 varints):
-  request  = op:byte  payload
-             op 0x01 (gate1): payload = varint n          -> gate1 n
-  response = 0x00 payload                                  success
-           | 0x01 code:byte                                error, code below
+Wire format v1 (integers are unsigned LEB128 varints, lists are varint count + elements):
+  request  = op:byte payload
+    op 0x01 gate1:      payload = n                                -> ok n'      (n' = 2n+1)
+    op 0x02 priceOrder: payload = customer discountPct [line]      -> ok quote
+                        line    = sku qty unitPrice
+                        quote   = subtotal discount total lineCount
+  response = 0x00 payload        success
+           | 0x01 code:byte      error
+    transport codes 1 empty, 2 notBytes, 3 unknownOp, 4 truncated, 5 trailing
+    domain codes   16 noLines, 17 zeroQty, 18 badDiscount, 19 duplicateSku
 
-Every function here is total and structurally recursive (no `partial`, no well-founded
-recursion, no `implemented_by`/`extern`, no `Float`).
+No `partial`, well-founded recursion, `implemented_by`, `extern` or `Float` in this module
+or anything it extracts.
 -/
 
 namespace Spike.Wire
+open Spike.Order
 
-abbrev Bytes := List Nat
-
-inductive Err where
-  | empty          -- request has no op byte
-  | notBytes       -- some element is > 255 (transport invariant broken)
-  | unknownOp      -- op byte not recognised
-  | truncated      -- varint ran off the end of the input
-  | trailing       -- bytes left over after the payload
-deriving DecidableEq, Repr
-
-def Err.code : Err → Nat
-  | .empty => 1 | .notBytes => 2 | .unknownOp => 3 | .truncated => 4 | .trailing => 5
-
-/-- Every element is a byte. -/
-def allBytes : Bytes → Bool
-  | [] => true
-  | b :: bs => decide (b < 256) && allBytes bs
-
-/-- LEB128 encoding with explicit fuel; `encodeNat` supplies enough. -/
-def encodeAux : Nat → Nat → Bytes
-  | 0, _ => []
-  | k + 1, n => if n < 128 then [n] else (n % 128 + 128) :: encodeAux k (n / 128)
-
-def encodeNat (n : Nat) : Bytes := encodeAux (n + 1) n
-
-/-- LEB128 decoding; returns the value and the rest of the input. Structural on the list. -/
-def decodeNat : Bytes → Except Err (Nat × Bytes)
-  | [] => .error .truncated
-  | b :: rest =>
-    if b < 128 then .ok (b, rest)
-    else match decodeNat rest with
-      | .error e => .error e
-      | .ok (m, r) => .ok (b - 128 + 128 * m, r)
-
-/-- Decode a varint that must consume the whole input. -/
-def decodeNatExact (bs : Bytes) : Except Err Nat :=
-  match decodeNat bs with
-  | .error e => .error e
-  | .ok (n, []) => .ok n
-  | .ok (_, _ :: _) => .error .trailing
-
-def dispatch : Bytes → Except Err Bytes
-  | [] => .error .empty
+def dispatch : Bytes → Except Nat Bytes
+  | [] => .error Err.empty.code
   | op :: payload =>
     if op = 1 then
-      match decodeNatExact payload with
-      | .error e => .error e
+      match exact (decodeNat payload) with
+      | .error e => .error e.code
       | .ok n => .ok (encodeNat (Spike.gate1 n))
-    else .error .unknownOp
+    else if op = 2 then
+      match exact (decodeOrder payload) with
+      | .error e => .error e.code
+      | .ok o =>
+        match priceOrder o with
+        | .error d => .error d.code
+        | .ok q => .ok (encodeQuote q)
+    else .error Err.unknownOp.code
 
-def respond : Except Err Bytes → Bytes
+def respond : Except Nat Bytes → Bytes
   | .ok payload => 0 :: payload
-  | .error e => [1, e.code]
+  | .error c => [1, c]
 
 /-- The extracted entry point. -/
 def handle (req : Bytes) : Bytes :=
-  if allBytes req then respond (dispatch req) else respond (.error .notBytes)
+  if allBytes req then respond (dispatch req) else respond (.error Err.notBytes.code)
+
+/-! ### End-to-end theorems about the extracted function -/
+
+theorem err_code_lt (e : Err) : e.code < 256 := by cases e <;> decide
+theorem orderErr_code_lt (e : OrderErr) : e.code < 256 := by cases e <;> decide
+
+/-- Every response is a byte string, so the OCaml boundary's byte check can only fail if
+the trusted pipeline (extraction, runtime axioms, compiler) is broken. -/
+theorem allBytes_handle (req : Bytes) : allBytes (handle req) = true := by
+  unfold handle
+  split
+  · unfold dispatch
+    split
+    · simp [respond, allBytes, Err.code]
+    · split
+      · split <;> simp_all [respond, allBytes, allBytes_encodeNat, err_code_lt]
+      · split
+        · split
+          · simp [respond, allBytes, err_code_lt]
+          · split <;> simp [respond, allBytes, orderErr_code_lt, allBytes_encodeQuote]
+        · simp [respond, allBytes, Err.code]
+  · simp [respond, allBytes, Err.code]
+
+/-- On a well-formed order request, the response is exactly the encoded result of the
+domain function. -/
+theorem handle_priceOrder (o : Order) :
+    handle (2 :: encodeOrder o) =
+      match priceOrder o with
+      | .ok q => 0 :: encodeQuote q
+      | .error d => [1, d.code] := by
+  have hb : allBytes (2 :: encodeOrder o) = true := by
+    simp [allBytes, allBytes_encodeOrder]
+  simp only [handle, hb, if_true, dispatch, exact_decodeOrder_encodeOrder]
+  simp only [show (2 : Nat) ≠ 1 by decide, if_false, if_true]
+  split <;> simp_all [respond]
 
 /-! Kernel-checked examples (erased before extraction). `notBytes` cannot be produced from
 real OCaml bytes, so it is only testable here. -/
 example : handle [1, 300] = [1, 2] := by decide
 example : handle [] = [1, 1] := by decide
-example : handle [2] = [1, 3] := by decide
+example : handle [7] = [1, 3] := by decide
 example : handle [1, 128] = [1, 4] := by decide
 example : handle [1, 5, 0] = [1, 5] := by decide
 example : handle [1, 5] = [0, 11] := by decide
 example : handle [1, 128, 1] = [0, 129, 2] := by decide
+-- order: customer 1, 10% off, lines (sku 7, qty 2, 150c) and (sku 8, qty 1, 100c)
+example : handle [2, 1, 10, 2, 7, 2, 150, 1, 8, 1, 100] = [0, 144, 3, 40, 232, 2, 2] := by decide
+example : handle [2, 1, 10, 0] = [1, 16] := by decide
+example : handle [2, 1, 101, 1, 7, 1, 1] = [1, 18] := by decide
+example : handle [2, 1, 0, 1, 7, 0, 1] = [1, 17] := by decide
+example : handle [2, 1, 0, 2, 7, 1, 1, 7, 1, 1] = [1, 19] := by decide
 
 end Spike.Wire
 

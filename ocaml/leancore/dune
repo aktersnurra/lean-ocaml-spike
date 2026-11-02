@@ -35,12 +35,19 @@
    (copy extracted/gate2.o gate2.o)
    (copy extracted/gate2.cmi gate2.cmi))))
 
-; Dune only knows about the imported objects through this generated copy of the boundary
-; source, which depends on them (a library stanza has no deps field).
+;; Dune only knows about the imported objects through this generated copy of the boundary
+;; source (a library stanza has no deps field, and library_flags registers none). The copy
+;; embeds a digest of the imported objects: without it, Dune's early cutoff keeps the old
+;; leancore.cmxa (identical boundary source => identical leancore.cmx) and silently links
+;; STALE extracted code after a re-extraction. (Found in Gate 3.)
 (rule
  (target leancore.ml)
  (deps leancore.ml.in decidable.cmx decidable.o decidable.cmi eq.cmx eq.o eq.cmi LeanArray.cmx LeanArray.o LeanArray.cmi nat.cmx nat.o nat.cmi int.cmx int.o int.cmi axioms.cmx axioms.o axioms.cmi gate1.cmx gate1.o gate1.cmi gate2.cmx gate2.o gate2.cmi)
- (action (copy leancore.ml.in leancore.ml)))
+ (action
+  (with-stdout-to leancore.ml
+   (progn
+    (cat leancore.ml.in)
+    (system "printf 'let _extracted_digest = \"%s\"\\n' $(cat *.cmx *.o *.cmi | md5sum | cut -c1-32)")))))
 
 (library
  (name leancore)

@@ -31,7 +31,7 @@ let () =
   expect "gate1 2^100" ("\x01" ^ leb128 big) (ok_gate1 big);
   expect "non-canonical varint 80 00" "\x01\x80\x00" (ok_gate1 Z.zero);
   expect "error empty" "" (err 1);
-  expect "error unknown op" "\x02\x05" (err 3);
+  expect "error unknown op" "\x07\x05" (err 3);
   expect "error op without payload" "\x01" (err 4);
   expect "error truncated varint" "\x01\x80" (err 4);
   expect "error trailing bytes" "\x01\x05\x00" (err 5);
@@ -45,7 +45,7 @@ let () =
     let s = String.init len (fun i -> if i = 0 && Random.bool () then '\x01' else Char.chr (Random.int 256)) in
     match call s with
     | r when String.length r >= 1 && r.[0] = '\x00' -> incr oks
-    | r when String.length r = 2 && r.[0] = '\x01' && List.mem (Char.code r.[1]) [1; 3; 4; 5] -> ()
+    | r when String.length r = 2 && r.[0] = '\x01' && List.mem (Char.code r.[1]) [1; 3; 4; 5; 16; 17; 18; 19] -> ()
     | r -> incr bad; if !bad <= 5 then Printf.printf "FAIL fuzz %s -> %s\n" (hex s) (hex r)
     | exception e -> incr bad; if !bad <= 5 then Printf.printf "FAIL fuzz %s raised %s\n" (hex s) (Printexc.to_string e)
   done;

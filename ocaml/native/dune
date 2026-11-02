@@ -1,0 +1,7 @@
+; Hand-written native OCaml implementation of the same wire spec (domain/Spike/Gate2.lean).
+; TEST AND BENCHMARK ONLY: it is the Gate 3 baseline and the differential-test oracle.
+; Applications must use Leancore.call; nothing in leancore depends on this.
+(library
+ (name native_core)
+ (modes native)
+ (libraries zarith))

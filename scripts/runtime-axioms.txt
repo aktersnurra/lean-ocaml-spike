@@ -1,0 +1,12 @@
+# Runtime (OCaml-side) axioms the extracted core references. TRUSTED, UNVERIFIED.
+# All are implemented in third_party/l2l/benchmarks/via_malfunction/nat-inline.ml at L2L_REV
+# (Lean Nat = Zarith Z.t; decisions via decidable-pruned.ml). scripts/audit.sh fails if the
+# extracted code starts referencing anything not listed here.
+def__Nat_add
+def__Nat_beq
+def__Nat_decEq
+def__Nat_decLt
+def__Nat_div
+def__Nat_mod
+def__Nat_mul
+def__Nat_sub

@@ -1,4 +1,4 @@
-(test
- (name test_gate2)
+(tests
+ (names test_gate2 test_gate3)
  (modes native)
- (libraries zarith leancore))
+ (libraries zarith unix leancore native_core))
