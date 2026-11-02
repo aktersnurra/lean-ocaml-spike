@@ -64,7 +64,7 @@ third_party bin ocaml/leancore/extracted`, then the CI sequence below), 2026-11-
 | OCaml 5 domain concurrency | 8 domains × 50,000 calls, each checked against native: 0 wrong, 0 exceptions | `ocaml/conc/domains_stress.ml`, `scripts/gate3-ocaml5.sh` |
 | Eio fibers (separate test) | 1,000 fibers on one domain + 4 domains × 100 fibers via `Domain_manager`, 200,000 calls: 0 wrong | `ocaml/conc/eio_stress.ml` |
 | Benchmark vs native (target ≤ 10x) | **1.0x–3.5x** on OCaml 4.14, **1.0x–3.8x** on OCaml 5.3 (table below) | `ocaml/bench/bench.ml` |
-| Clean-build reproducibility in CI | **Passed on GitHub Actions** (ubuntu-24.04, 4 vCPU), cold: [run 41528451917](https://github.com/aktersnurra/lean-ocaml-spike/actions/runs/41528451917), 1h31m total, of which bootstrap 88 min and all gates under 2 min | `.github/workflows/ci.yml` |
+| Clean-build reproducibility in CI | **Passed on GitHub Actions** (ubuntu-24.04, 4 vCPU), cold: [run 41528451917](https://github.com/aktersnurra/lean-ocaml-spike/actions/runs/41528451917), 1h31m total, of which bootstrap 88 min and all gates under 2 min. Warm (opam cache hit): [run 41547047661](https://github.com/aktersnurra/lean-ocaml-spike/actions/runs/41547047661), **2.9 min**. CI must install `clang` itself, or warm runs rebuild CertiRocq and Peregrine (35 min) | `.github/workflows/ci.yml` |
 | Runtime axioms minimal, documented, tested | 8 Nat axioms (below); `scripts/audit.sh` fails if the set changes; every test above exercises them | `scripts/runtime-axioms.txt` |
 | Proof axioms audited | every theorem: `[propext, Quot.sound]`; `Spike.gate1`: none; `Spike.Wire.handle`: `[propext, Quot.sound]` (from `Lean.RBMap`'s well-formedness proof field, erased) | `domain/Spike/Audit.lean`, `scripts/audit.sh` |
 
