@@ -302,7 +302,7 @@ scripts/gate1.sh                                       # Gate 1a (applies the fr
 scripts/gate1b.sh                                      # Gate 1b: Dune executable
 ```
 
-Needs `elan`, `opam`, `git`, `gcc`, `libgmp-dev`. Pins live in `versions.env`.
+Needs `elan`, `opam`, `git`, `gcc`, `clang` (for `conf-clang`/CertiRocq), `libgmp-dev`. Pins live in `versions.env`.
 
 **Stop rule:** if Gate 1 needs patches to Peregrine, the Lean frontend, or Malfunction beyond
 version pins, stop and record exactly what broke. Do not start Gate 2. (Hit once; resolved by

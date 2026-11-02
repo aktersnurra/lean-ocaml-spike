@@ -1,7 +1,7 @@
 # Clean build of the whole spike with the pinned toolchain (versions.env), then every gate.
 # First cold run passed in 1h31m (bootstrap 88 min). The opam root is cached on the hash of
 # versions.env + bootstrap.sh because the peregrine switch (Rocq, MetaRocq, CertiRocq,
-# CompCert: 82 packages) takes hours to build cold.
+# CompCert: 82 packages) takes about 1.5 hours to build cold.
 name: ci
 on: [push, pull_request, workflow_dispatch]
 jobs:
@@ -13,8 +13,11 @@ jobs:
       OPAMCONFIRMLEVEL: unsafe-yes
     steps:
       - uses: actions/checkout@v4
+      # clang: conf-clang (needed by rocq-certirocq). Without it here, opam installs it on the cold
+      # run via depext, then on every warm run sees it missing ("system changes") and rebuilds
+      # conf-clang -> rocq-certirocq -> rocq-peregrine (35 min instead of seconds).
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y opam libgmp-dev bubblewrap m4 pkg-config unzip rsync
+        run: sudo apt-get update && sudo apt-get install -y opam libgmp-dev bubblewrap m4 pkg-config unzip rsync clang
       - name: Restore opam root
         uses: actions/cache@v4
         with:
