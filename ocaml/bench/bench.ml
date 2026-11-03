@@ -42,4 +42,18 @@ let () =
     let r = l /. n in
     if r > !worst then worst := r;
     Printf.printf "%-30s %12.0f %12.0f %8.2f\n%!" name l n r) cases;
-  Printf.printf "worst ratio %.2f (target <= 10): %s\n" !worst (if !worst <= 10. then "PASS" else "FAIL")
+  Printf.printf "worst ratio %.2f (target <= 10): %s\n" !worst (if !worst <= 10. then "PASS" else "FAIL");
+  (* Wire format v2 (generated codecs, Codec typeclass in Lean): same orders, same work. *)
+  let v2_order n : Spike_api.order =
+    { customer = Z.of_int 4242; discount_pct = Z.of_int 15;
+      lines = List.init n (fun j -> ({ sku = Z.of_int (1000 + j); qty = Z.of_int (1 + j mod 9); unit_price = Z.of_int (199 + 37 * j) } : Spike_api.line)) } in
+  Printf.printf "\nwire v2 (generated): raw bytes and typed call vs v1 (all Lean)\n%-30s %12s %12s %12s %8s\n" "case" "v1 ns" "v2 raw ns" "v2 typed ns" "v2/v1";
+  List.iter (fun (name, n, iters) ->
+    let v1req = order n in
+    let o = v2_order n in
+    let v2req = Spike_api.encode_request (Spike_api.PriceOrder o) in
+    let v1 = time_per_call Leancore.call v1req iters in
+    let v2 = time_per_call Leancore.call_api v2req iters in
+    let typed = time_per_call (fun o -> Spike_api.call (Spike_api.PriceOrder o)) o iters in
+    Printf.printf "%-30s %12.0f %12.0f %12.0f %8.2f\n%!" name v1 v2 typed (v2 /. v1))
+    [ ("order 1 line", 1, 500_000); ("order 10 lines", 10, 100_000); ("order 100 lines", 100, 10_000); ("order 1000 lines", 1000, 1_000) ]

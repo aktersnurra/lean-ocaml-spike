@@ -1,4 +1,4 @@
 (tests
- (names test_gate2 test_gate3)
+ (names test_gate2 test_gate3 test_api)
  (modes native)
- (libraries zarith unix leancore native_core))
+ (libraries zarith unix leancore native_core spike_api))
