@@ -1,3 +1,4 @@
+<!-- SUPERSEDED: this was turned into a PR on lean-to-lambdabox (branch fix-primint-serialization on the aktersnurra fork); see docs/upstream-pr-comment.md for follow-up notes. -->
 <!-- DRAFT, not filed. Target: peregrine-project/lean-to-lambdabox (cc peregrine-tool).
      Review before posting. -->
 
