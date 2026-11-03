@@ -1,0 +1,6 @@
+; Stack-depth probe for recursive types (not a pass/fail test): how deep a nested Formula can
+; the extracted core decode, evaluate and encode before the native stack runs out?
+(executable
+ (name depth_probe)
+ (modes native)
+ (libraries zarith unix leancore spike_api))

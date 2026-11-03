@@ -16,10 +16,11 @@ inductive Err where
   | truncated      -- input ran out in the middle of a value
   | trailing       -- bytes left over after the payload
   | badTag         -- constructor tag out of range (generated codecs, wire format v2)
+  | tooLarge       -- request longer than the API's size limit (wire format v2)
 deriving DecidableEq, Repr
 
 def Err.code : Err → Nat
-  | .empty => 1 | .notBytes => 2 | .unknownOp => 3 | .truncated => 4 | .trailing => 5 | .badTag => 6
+  | .empty => 1 | .notBytes => 2 | .unknownOp => 3 | .truncated => 4 | .trailing => 5 | .badTag => 6 | .tooLarge => 7
 
 /-- Every element is a byte. -/
 def allBytes : Bytes → Bool

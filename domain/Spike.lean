@@ -5,4 +5,5 @@ import Spike.Gate2
 import Spike.Codec
 import Spike.Codec.Derive
 import Spike.Codec.OCaml
+import Spike.Formula
 import Spike.Api

@@ -13,12 +13,14 @@ let fail fmt = Printf.ksprintf (fun s -> incr failures; print_endline ("FAIL " ^
 let z = Z.of_int
 let hex b = String.concat " " (List.map (fun c -> Printf.sprintf "%02x" (Char.code c)) (List.of_seq (Bytes.to_seq b)))
 
-let pp_err = function Empty -> "Empty" | NotBytes -> "NotBytes" | UnknownOp -> "UnknownOp" | Truncated -> "Truncated" | Trailing -> "Trailing" | BadTag -> "BadTag"
+let pp_err = function Empty -> "Empty" | NotBytes -> "NotBytes" | UnknownOp -> "UnknownOp" | Truncated -> "Truncated" | Trailing -> "Trailing" | BadTag -> "BadTag" | TooLarge -> "TooLarge"
 let pp_oe = function NoLines -> "NoLines" | ZeroQty -> "ZeroQty" | BadDiscount -> "BadDiscount" | DuplicateSku -> "DuplicateSku"
 let pp = function
   | Ok (Response_gate1 n) -> "gate1 " ^ Z.to_string n
   | Ok (Quote q) -> Printf.sprintf "quote %s/%s/%s/%s" (Z.to_string q.subtotal) (Z.to_string q.discount) (Z.to_string q.total) (Z.to_string q.line_count)
   | Ok (Echoed o) -> Printf.sprintf "echoed (%d lines)" (List.length o.lines)
+  | Ok (Value n) -> "value " ^ Z.to_string n
+  | Ok (Formula _) -> "formula"
   | Error (Transport e) -> "transport " ^ pp_err e
   | Error (Order e) -> "order " ^ pp_oe e
 
@@ -50,6 +52,11 @@ let () =
   raw "unknown request tag" "\x09" (Error (Transport BadTag));
   raw "truncated varint" "\x00\x80" (Error (Transport Truncated));
   raw "trailing bytes" "\x00\x05\x00" (Error (Transport Trailing));
+  raw "65,537-byte request (size limit)" ("\x00" ^ String.make 65_535 '\x80' ^ "\x01") (Error (Transport TooLarge));
+  raw "65,536-byte request (at the limit)" ("\x00" ^ String.make 65_534 '\x80' ^ "\x01") (Ok (Response_gate1 (Z.succ (Z.mul (Z.shift_left Z.one (7 * 65_534)) (z 2)))));
+  let deep n = String.make n '\x02' ^ "\x00\x00" ^ String.concat "" (List.init n (fun _ -> "\x00\x00")) in
+  raw "deep formula, 20k levels (60 KB)" ("\x03" ^ deep 20_000 ^ "\x05") (Ok (Value Z.zero));
+  raw "deep formula, 1M levels (3 MB)" ("\x03" ^ deep 1_000_000 ^ "\x05") (Error (Transport TooLarge));
 
   print_endline "-- echo round trips (OCaml enc -> Lean dec/enc -> OCaml dec)";
   Random.init 11;
@@ -108,7 +115,11 @@ let () =
     | _ -> let i = Random.int (len + 1) in String.sub s 0 i ^ String.make 1 (Char.chr (Random.int 256)) ^ String.sub s i (len - i) in
   let n_mut = 100_000 and bad = ref 0 and accepted = ref 0 in
   for _ = 1 to n_mut do
-    let r = match Random.int 3 with 0 -> Request_gate1 (rz ()) | 1 -> PriceOrder (ro ()) | _ -> Echo (ro ()) in
+    let rec rf d = if d = 0 then (if Random.bool () then Lit (rz ()) else X) else
+      match Random.int 5 with 0 -> Lit (rz ()) | 1 -> X | 2 -> Add (rf (d-1), rf (d-1)) | 3 -> Div (rf (d-1), rf (d-1)) | _ -> IfLt (rf (d-1), rf (d-1), rf (d-1), rf (d-1)) in
+    let r = match Random.int 5 with
+      | 0 -> Request_gate1 (rz ()) | 1 -> PriceOrder (ro ()) | 2 -> Echo (ro ())
+      | 3 -> EvalFormula (rf (Random.int 5), rz ()) | _ -> EchoFormula (rf (Random.int 5)) in
     let s = ref (Bytes.to_string (encode_request r)) in
     for _ = 1 to 1 + Random.int 3 do s := mutate (Bytes.of_string !s) done;
     let bs = Bytes.of_string !s in
@@ -121,4 +132,30 @@ let () =
        | Error c, got -> incr bad; if !bad < 5 then fail "OCaml rejects (code %d), Lean says %s" c (pp got))
   done;
   Printf.printf "mutation fuzz: %d inputs (%d still decodable), %d disagreements\n" n_mut !accepted !bad;
+  print_endline "-- recursive type: Formula (evaluation vs OCaml reference, echo round trips)";
+  let rec ref_eval v = function
+    | Lit n -> n | X -> v
+    | Add (a, b) -> Z.add (ref_eval v a) (ref_eval v b)
+    | Sub (a, b) -> let d = Z.sub (ref_eval v a) (ref_eval v b) in if Z.sign d < 0 then Z.zero else d
+    | Mul (a, b) -> Z.mul (ref_eval v a) (ref_eval v b)
+    | Div (a, b) -> let d = ref_eval v b in if Z.equal d Z.zero then Z.zero else Z.div (ref_eval v a) d
+    | IfLt (a, b, t, e) -> if Z.lt (ref_eval v a) (ref_eval v b) then ref_eval v t else ref_eval v e in
+  let rec rf d = if d = 0 then (if Random.bool () then Lit (rz ()) else X) else
+    match Random.int 8 with
+    | 0 -> Lit (rz ()) | 1 -> X
+    | 2 -> Add (rf (d-1), rf (d-1)) | 3 -> Sub (rf (d-1), rf (d-1)) | 4 -> Mul (rf (d-1), rf (d-1))
+    | 5 -> Div (rf (d-1), rf (d-1)) | _ -> IfLt (rf (d-1), rf (d-1), rf (d-1), rf (d-1)) in
+  let n_f = 20_000 and bad = ref 0 in
+  for _ = 1 to n_f do
+    let f = rf (Random.int 7) and v = rz () in
+    (match call (EvalFormula (f, v)) with
+     | Ok (Value n) when Z.equal n (ref_eval v f) -> ()
+     | r -> incr bad; if !bad < 5 then fail "formula eval mismatch: %s" (pp r));
+    (match call (EchoFormula f) with
+     | Ok (Formula f') when f' = f -> ()
+     | r -> incr bad; if !bad < 5 then fail "formula echo mismatch: %s" (pp r))
+  done;
+  Printf.printf "formulas: %d random (depth <= 6), eval + echo, %d mismatches\n" n_f !bad;
+  expect "formula: if x < 10 then 2x else x-1 (x=3)" (call (EvalFormula (IfLt (X, Lit (z 10), Mul (Lit (z 2), X), Sub (X, Lit (z 1))), z 3))) (Ok (Value (z 6)));
+  expect "formula: div by zero = 0" (call (EvalFormula (Div (X, Lit Z.zero), z 7))) (Ok (Value Z.zero));
   if !failures > 0 then (Printf.printf "%d FAILURES\n" !failures; exit 1) else print_endline "== generated client tests PASSED =="

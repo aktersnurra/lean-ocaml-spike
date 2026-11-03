@@ -8,6 +8,7 @@ type err =
   | Truncated
   | Trailing
   | BadTag
+  | TooLarge
 
 and order_err =
   | NoLines
@@ -21,15 +22,28 @@ and order = { customer : Z.t; discount_pct : Z.t; lines : (line) list }
 
 and quote = { subtotal : Z.t; discount : Z.t; total : Z.t; line_count : Z.t }
 
+and formula =
+  | Lit of Z.t
+  | X
+  | Add of formula * formula
+  | Sub of formula * formula
+  | Mul of formula * formula
+  | Div of formula * formula
+  | IfLt of formula * formula * formula * formula
+
 and request =
   | Request_gate1 of Z.t
   | PriceOrder of order
   | Echo of order
+  | EvalFormula of formula * Z.t
+  | EchoFormula of formula
 
 and response =
   | Response_gate1 of Z.t
   | Quote of quote
   | Echoed of order
+  | Value of Z.t
+  | Formula of formula
 
 and api_error =
   | Transport of err
@@ -43,6 +57,7 @@ let rec enc_err (b : Buffer.t) (x : err) : unit =
     | Truncated -> Wire_rt.tag b 3
     | Trailing -> Wire_rt.tag b 4
     | BadTag -> Wire_rt.tag b 5
+    | TooLarge -> Wire_rt.tag b 6
 
 and enc_order_err (b : Buffer.t) (x : order_err) : unit =
   match x with
@@ -57,17 +72,31 @@ and enc_order (b : Buffer.t) (x : order) : unit = Wire_rt.enc_nat b x.customer; 
 
 and enc_quote (b : Buffer.t) (x : quote) : unit = Wire_rt.enc_nat b x.subtotal; Wire_rt.enc_nat b x.discount; Wire_rt.enc_nat b x.total; Wire_rt.enc_nat b x.line_count
 
+and enc_formula (b : Buffer.t) (x : formula) : unit =
+  match x with
+    | Lit (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
+    | X -> Wire_rt.tag b 1
+    | Add (x0, x1) -> Wire_rt.tag b 2; enc_formula b x0; enc_formula b x1
+    | Sub (x0, x1) -> Wire_rt.tag b 3; enc_formula b x0; enc_formula b x1
+    | Mul (x0, x1) -> Wire_rt.tag b 4; enc_formula b x0; enc_formula b x1
+    | Div (x0, x1) -> Wire_rt.tag b 5; enc_formula b x0; enc_formula b x1
+    | IfLt (x0, x1, x2, x3) -> Wire_rt.tag b 6; enc_formula b x0; enc_formula b x1; enc_formula b x2; enc_formula b x3
+
 and enc_request (b : Buffer.t) (x : request) : unit =
   match x with
     | Request_gate1 (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
     | PriceOrder (x0) -> Wire_rt.tag b 1; enc_order b x0
     | Echo (x0) -> Wire_rt.tag b 2; enc_order b x0
+    | EvalFormula (x0, x1) -> Wire_rt.tag b 3; enc_formula b x0; Wire_rt.enc_nat b x1
+    | EchoFormula (x0) -> Wire_rt.tag b 4; enc_formula b x0
 
 and enc_response (b : Buffer.t) (x : response) : unit =
   match x with
     | Response_gate1 (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
     | Quote (x0) -> Wire_rt.tag b 1; enc_quote b x0
     | Echoed (x0) -> Wire_rt.tag b 2; enc_order b x0
+    | Value (x0) -> Wire_rt.tag b 3; Wire_rt.enc_nat b x0
+    | Formula (x0) -> Wire_rt.tag b 4; enc_formula b x0
 
 and enc_api_error (b : Buffer.t) (x : api_error) : unit =
   match x with
@@ -82,6 +111,7 @@ let rec dec_err (c : Wire_rt.cursor) : err =
     | 3 -> Truncated
     | 4 -> Trailing
     | 5 -> BadTag
+    | 6 -> TooLarge
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
 and dec_order_err (c : Wire_rt.cursor) : order_err =
@@ -98,11 +128,24 @@ and dec_order (c : Wire_rt.cursor) : order = let f_customer = Wire_rt.dec_nat c 
 
 and dec_quote (c : Wire_rt.cursor) : quote = let f_subtotal = Wire_rt.dec_nat c in let f_discount = Wire_rt.dec_nat c in let f_total = Wire_rt.dec_nat c in let f_line_count = Wire_rt.dec_nat c in ({ subtotal = f_subtotal; discount = f_discount; total = f_total; line_count = f_line_count } : quote)
 
+and dec_formula (c : Wire_rt.cursor) : formula =
+  match Wire_rt.byte c with
+    | 0 -> let x0 = Wire_rt.dec_nat c in Lit (x0)
+    | 1 -> X
+    | 2 -> let x0 = dec_formula c in let x1 = dec_formula c in Add (x0, x1)
+    | 3 -> let x0 = dec_formula c in let x1 = dec_formula c in Sub (x0, x1)
+    | 4 -> let x0 = dec_formula c in let x1 = dec_formula c in Mul (x0, x1)
+    | 5 -> let x0 = dec_formula c in let x1 = dec_formula c in Div (x0, x1)
+    | 6 -> let x0 = dec_formula c in let x1 = dec_formula c in let x2 = dec_formula c in let x3 = dec_formula c in IfLt (x0, x1, x2, x3)
+    | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
+
 and dec_request (c : Wire_rt.cursor) : request =
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in Request_gate1 (x0)
     | 1 -> let x0 = dec_order c in PriceOrder (x0)
     | 2 -> let x0 = dec_order c in Echo (x0)
+    | 3 -> let x0 = dec_formula c in let x1 = Wire_rt.dec_nat c in EvalFormula (x0, x1)
+    | 4 -> let x0 = dec_formula c in EchoFormula (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
 and dec_response (c : Wire_rt.cursor) : response =
@@ -110,6 +153,8 @@ and dec_response (c : Wire_rt.cursor) : response =
     | 0 -> let x0 = Wire_rt.dec_nat c in Response_gate1 (x0)
     | 1 -> let x0 = dec_quote c in Quote (x0)
     | 2 -> let x0 = dec_order c in Echoed (x0)
+    | 3 -> let x0 = Wire_rt.dec_nat c in Value (x0)
+    | 4 -> let x0 = dec_formula c in Formula (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
 and dec_api_error (c : Wire_rt.cursor) : api_error =
@@ -128,6 +173,8 @@ let encode_order (x : order) : bytes = Wire_rt.to_bytes enc_order x
 let decode_order (bs : bytes) : (order, int) result = Wire_rt.decode dec_order bs
 let encode_quote (x : quote) : bytes = Wire_rt.to_bytes enc_quote x
 let decode_quote (bs : bytes) : (quote, int) result = Wire_rt.decode dec_quote bs
+let encode_formula (x : formula) : bytes = Wire_rt.to_bytes enc_formula x
+let decode_formula (bs : bytes) : (formula, int) result = Wire_rt.decode dec_formula bs
 let encode_request (x : request) : bytes = Wire_rt.to_bytes enc_request x
 let decode_request (bs : bytes) : (request, int) result = Wire_rt.decode dec_request bs
 let encode_response (x : response) : bytes = Wire_rt.to_bytes enc_response x

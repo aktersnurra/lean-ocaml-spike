@@ -89,8 +89,34 @@ match Spike_api.call (PriceOrder { customer; discount_pct; lines }) with
 
 Wire format v2 is simply the `deriving Codec` layout: fields in order, a tag byte iff the type
 has more than one constructor, `Nat` = LEB128, `List` = count + elements, `Except` = tag 0 ok /
-1 error. Unsupported (clear errors): recursive types, parameters/indices, dependent fields,
-field types without a `Codec` instance, more than 255 constructors.
+1 error. Unsupported (clear errors): nested or mutual recursion (e.g. `List T` inside `T`),
+parameters/indices, dependent fields, field types without a `Codec` instance, more than 255
+constructors.
+
+**Recursive types** (a field of type `T` inside `T`; example: `Spike.Formula.Formula`, a
+pricing-formula language evaluated by the core):
+- *Decoder:* fuel-indexed `T.codecDecAux : Nat → Bytes → …` (structural on the fuel), called
+  with fuel = input length. Every node consumes its tag byte, so a valid encoding never runs
+  out of fuel; proved by induction on the value (`T.codecDecAux_enc`: fuel ≥ encoding length
+  suffices).
+- *Encoder:* accumulator-passing `T.codecEncAux` (no subtree is copied, linear time), proved
+  equal to the plain append form `T.codecEncSpec` used by the proofs (`T.codecEncAux_spec`).
+  The first version used the append form directly: encoding a left-deep tree was quadratic
+  (1.9 s at depth 10,000; timed out at 100,000). Now 0.04 s at 100,000.
+- *Stack depth:* decoding, evaluating and encoding recurse once per nesting level, and nesting
+  is attacker-controlled (one tag byte per level). Measured with `ocaml/depth/depth_probe.ml`:
+
+  | | OCaml 4.14 (8 MB system stack) | OCaml 5.3 (growable stack) |
+  |---|---|---|
+  | core (decode + eval/encode) | fine at 200k levels, `Stack_overflow` at 300k | no overflow up to 3M; 1.8 s at 1M, 22 s at 3M |
+  | generated OCaml client decoder | `Stack_overflow` at 200k | fine |
+
+  So the API has a **request size limit** in Lean (`Spike.Api.maxRequestBytes = 64 KiB`,
+  transport error `tooLarge`), which bounds depth at 64K, at least 3x below the 4.14 limit.
+  The end-to-end theorems now carry the precondition "encoded request ≤ 64 KiB", and
+  `respond_tooLarge` proves oversized requests get the typed error. A generic depth budget in
+  the codec (conditional round-trip law) or iterative decoders would remove the need for a
+  global size cap; not done.
 
 **Results** (`scripts/gen.sh`, also in CI and on OCaml 5 via `scripts/gate3-ocaml5.sh`)
 - Generated client is regenerated on every build; `gen.sh` fails if the checked-in
@@ -99,6 +125,10 @@ field types without a `Codec` instance, more than 255 constructors.
   transport errors (empty, bad tag, truncated, trailing) decode as typed errors.
 - 20,000 random-order echo round trips (OCaml enc → Lean dec/enc → OCaml dec): 0 mismatches.
 - 20,000 random orders: v2 quotes/errors identical to the v1 native oracle.
+- 20,000 random formulas (depth ≤ 6): evaluation equals an OCaml reference evaluator, and
+  echo round trips are exact; formulas also included in the mutation fuzz.
+- Size limit: 65,536-byte request served, 65,537 rejected with `TooLarge`; a 1M-level formula
+  (3 MB) is rejected instead of overflowing the stack.
 - Decoder agreement, OCaml generated decoder vs Lean decoder: 200,000 random byte strings and
   100,000 mutated valid encodings (11,368 still decodable): 0 disagreements, every reply decodes.
 - Audit: derived instances and the v2 theorems use only `[propext, Quot.sound]`; the `api`
@@ -108,8 +138,8 @@ field types without a `Codec` instance, more than 255 constructors.
   10–40% (~0.1–0.5 µs per call).
 
 **Next steps (not done)**
-- Recursive and parametric types (needs well-founded-free structural recursion in the derived
-  decoder, and a fuel/size argument in the proof).
+- Nested recursion (`List T` inside `T`, rose trees), mutual and parametric types.
+- Depth-bounded codecs instead of a global request size cap.
 - Prove the OCaml side, or generate it from a verified description (today it is
   differential-tested, not proved).
 - A versioning story for the wire format (adding constructors/fields compatibly).
@@ -441,6 +471,8 @@ scripts/gen.sh             interface generator: regenerate client, staleness che
 domain/Spike/Codec.lean    Codec class (codec + proofs), base instances
 domain/Spike/Codec/        deriving Codec handler (Derive.lean), OCaml generator (OCaml.lean)
 domain/Spike/Api.lean      API types (single source of truth), handle (extracted as Api), #gen_ocaml
+domain/Spike/Formula.lean  recursive domain type (pricing formulas) + evaluator + monotonicity proof
+ocaml/depth/               stack-depth probe for recursive types (DEPTHS=... to choose depths)
 ocaml/api/                 generated client spike_api.ml (+ hand-written runtime wire_rt.ml)
 scripts/audit.sh           proof-axiom, forbidden-construct and runtime-axiom audit
 scripts/runtime-axioms.txt the allowed runtime (OCaml) axiom set
