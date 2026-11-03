@@ -41,3 +41,7 @@ let of_wire (l : Z.t list) : bytes =
   out
 
 let call (req : bytes) : bytes = of_wire (Gate2.main (to_wire req))
+
+(* Wire format v2 (generated from Lean types, see domain/Spike/Api.lean). Clients normally use
+   the generated typed client [Spike_api.call] instead of this raw bytes function. *)
+let call_api (req : bytes) : bytes = of_wire (Api.main (to_wire req))

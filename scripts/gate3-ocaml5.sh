@@ -8,9 +8,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 SW=spike-ocaml5
 SPIKE_MALFUNCTION_SWITCH=$SW scripts/extract.sh ocaml/leancore/extracted
-opam exec --switch=$SW -- dune build --build-dir _build_ocaml5 ./ocaml/conc/domains_stress.exe ./ocaml/conc/eio_stress.exe ./ocaml/test/test_gate3.exe
+opam exec --switch=$SW -- dune build --build-dir _build_ocaml5 ./ocaml/conc/domains_stress.exe ./ocaml/conc/eio_stress.exe ./ocaml/test/test_gate3.exe ./ocaml/test/test_api.exe
 B=_build_ocaml5/default/ocaml
 opam exec --switch=$SW -- $B/test/test_gate3.exe | tail -1
+opam exec --switch=$SW -- $B/test/test_api.exe | tail -1
 opam exec --switch=$SW -- $B/conc/domains_stress.exe "${DOMAINS:-8}" "${PER:-50000}"
 opam exec --switch=$SW -- $B/conc/eio_stress.exe
 opam exec --switch=$SW -- dune build --build-dir _build_ocaml5 ./ocaml/bench/bench.exe

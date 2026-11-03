@@ -28,7 +28,7 @@ TP="$ROOT/third_party/l2l"
 PEREGRINE="opam exec --switch=$PEREGRINE_SWITCH -- peregrine"
 MALFUNCTION="opam exec --switch=$MALFUNCTION_SWITCH -- malfunction"
 OCAMLOPT="opam exec --switch=$MALFUNCTION_SWITCH -- ocamlfind ocamlopt -package zarith"
-ENTRIES="${SPIKE_ENTRIES:-gate1 gate2}"
+ENTRIES="${SPIKE_ENTRIES:-gate1 gate2 api}"
 MODULES="decidable eq LeanArray nat int axioms $ENTRIES"
 # Compiled OCaml objects go in a per-switch directory; Lean/Peregrine outputs are shared.
 OBJ="$BUILD/ocaml-$MALFUNCTION_SWITCH"

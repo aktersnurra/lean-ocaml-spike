@@ -38,5 +38,7 @@ jobs:
         run: scripts/gate2.sh && experiments/gate2b/run.sh
       - name: Gate 3 (tests, differential fuzz, audit, benchmark)
         run: scripts/gate3.sh
-      - name: Gate 3 OCaml 5 (domains, Eio)
+      - name: Interface generator (generated client up to date, differential tests)
+        run: scripts/gen.sh
+      - name: Gate 3 OCaml 5 (domains, Eio, generated client)
         run: scripts/gate3-ocaml5.sh

@@ -10,3 +10,7 @@ val gate1 : Z.t -> Z.t
     gets a response. Response byte 0 is [0x00] (ok, payload follows) or [0x01]
     (error, one code byte follows). The wire format is defined only in Lean. *)
 val call : bytes -> bytes
+
+(** Wire format v2 entry point ([Spike.Api.handle]). Same contract as [call]; the wire format
+    is generated from the Lean types. Use the generated [Spike_api.call] for a typed API. *)
+val call_api : bytes -> bytes

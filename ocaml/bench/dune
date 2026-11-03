@@ -1,5 +1,5 @@
 (executable
  (name bench)
  (modes native)
- (libraries zarith unix leancore native_core)
+ (libraries zarith unix leancore native_core spike_api)
  (ocamlopt_flags (:standard -O3)))

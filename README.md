@@ -48,6 +48,73 @@ scripts/gate1b.sh   # Gate 1b
 Boundary check: if `ocaml/bin/main.ml` calls `Gate1.main` directly, the build fails with
 `Error: Unbound module Gate1`. Only `Leancore` is visible to clients.
 
+## Interface generator (MVP, branch `generator`)
+
+The API is defined **once**, as ordinary Lean types; everything else is derived:
+
+```lean
+-- domain/Spike/Api.lean
+inductive Request where
+  | gate1 (n : Nat) | priceOrder (o : Order) | echo (o : Order)
+deriving Codec
+inductive Response where
+  | gate1 (n : Nat) | quote (q : Quote) | echoed (o : Order)
+deriving Codec
+inductive ApiError where
+  | transport (e : Err) | order (e : OrderErr)
+deriving Codec
+
+def handle (req : Bytes) : Bytes := Codec.enc (respond req)    -- extracted as module Api
+
+#gen_ocaml "../ocaml/api/spike_api.ml" [Err, OrderErr, Line, Order, Quote, Request, Response, ApiError]
+  call Request => (Except ApiError Response) via Leancore.call_api
+```
+
+```ocaml
+(* OCaml, typed, no hand-written codec *)
+match Spike_api.call (PriceOrder { customer; discount_pct; lines }) with
+| Ok (Quote q) -> ...
+| Error (Order DuplicateSku) -> ...
+| Error (Transport e) -> ...
+```
+
+**Pieces**
+
+| Piece | What it does | Trust |
+|-------|--------------|-------|
+| `Spike.Wire.Codec` (`domain/Spike/Codec.lean`) | class bundling `enc`, `dec` **and** proofs `dec (enc x ++ rest) = ok (x, rest)` and "enc only emits bytes"; instances for `Nat`, `Bool`, `List`, `Except` | proved |
+| `deriving Codec` (`domain/Spike/Codec/Derive.lean`) | metaprogram: for structures and non-recursive inductives, generates encoder, decoder and instance; the proofs are discharged by a fixed `cases`/`simp` script, so **a derived codec either comes with its proofs or does not elaborate** | the metaprogram is not trusted: its output is kernel-checked |
+| `Spike.Api.handle` theorems | `allBytes_handle` (every reply is bytes), `handle_enc` and `decode_handle_enc` (an encoded request is answered with exactly the encoded `serve r`, and the client can always decode it) | proved, from the derived instances |
+| `#gen_ocaml` (`domain/Spike/Codec/OCaml.lean`) | writes OCaml types (structure → record, inductive → variant, clashing constructors prefixed), `enc_*`/`dec_*`, `encode_*`/`decode_*`, `decode_reply`, typed `call` | **unverified** generated code + ~70-line hand-written runtime `ocaml/api/wire_rt.ml`, checked differentially (below) |
+
+Wire format v2 is simply the `deriving Codec` layout: fields in order, a tag byte iff the type
+has more than one constructor, `Nat` = LEB128, `List` = count + elements, `Except` = tag 0 ok /
+1 error. Unsupported (clear errors): recursive types, parameters/indices, dependent fields,
+field types without a `Codec` instance, more than 255 constructors.
+
+**Results** (`scripts/gen.sh`, also in CI and on OCaml 5 via `scripts/gate3-ocaml5.sh`)
+- Generated client is regenerated on every build; `gen.sh` fails if the checked-in
+  `spike_api.ml` differs (tested by staging a stale copy).
+- Every constructor of `Request`/`Response`/`ApiError` exercised through the typed `call`;
+  transport errors (empty, bad tag, truncated, trailing) decode as typed errors.
+- 20,000 random-order echo round trips (OCaml enc → Lean dec/enc → OCaml dec): 0 mismatches.
+- 20,000 random orders: v2 quotes/errors identical to the v1 native oracle.
+- Decoder agreement, OCaml generated decoder vs Lean decoder: 200,000 random byte strings and
+  100,000 mutated valid encodings (11,368 still decodable): 0 disagreements, every reply decodes.
+- Audit: derived instances and the v2 theorems use only `[propext, Quot.sound]`; the `api`
+  module needs no new runtime axioms (same 8 `Nat` ones).
+- Performance: the generic typeclass codecs cost nothing measurable in the core (v2/v1 =
+  0.95–1.00 for 1–1,000-line orders); the typed OCaml `call` (OCaml-side encode/decode) adds
+  10–40% (~0.1–0.5 µs per call).
+
+**Next steps (not done)**
+- Recursive and parametric types (needs well-founded-free structural recursion in the derived
+  decoder, and a fuel/size argument in the proof).
+- Prove the OCaml side, or generate it from a verified description (today it is
+  differential-tested, not proved).
+- A versioning story for the wire format (adding constructors/fields compatibly).
+- Generate the `#erase` + `ENTRIES` + Dune wiring too, so a new API is one Lean file.
+
 ## Gate 3: correctness and robustness, PASS
 
 All commands pass from a clean tree (`rm -rf domain/.lake domain/build _build _build_ocaml5
@@ -370,6 +437,11 @@ scripts/gate1b.sh          Gate 1b: extract + Dune build + smoke test
 scripts/gate2.sh           Gate 2: extract + Dune build + boundary tests and fuzz
 scripts/gate3.sh           Gate 3: tests, differential fuzz, audit, benchmark (OCaml 4.14)
 scripts/gate3-ocaml5.sh    Gate 3: OCaml 5 build, domain + Eio stress, benchmark
+scripts/gen.sh             interface generator: regenerate client, staleness check, differential tests
+domain/Spike/Codec.lean    Codec class (codec + proofs), base instances
+domain/Spike/Codec/        deriving Codec handler (Derive.lean), OCaml generator (OCaml.lean)
+domain/Spike/Api.lean      API types (single source of truth), handle (extracted as Api), #gen_ocaml
+ocaml/api/                 generated client spike_api.ml (+ hand-written runtime wire_rt.ml)
 scripts/audit.sh           proof-axiom, forbidden-construct and runtime-axiom audit
 scripts/runtime-axioms.txt the allowed runtime (OCaml) axiom set
 domain/Spike/Wire.lean     varint/list codecs + round-trip lemmas
