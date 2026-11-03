@@ -88,10 +88,26 @@ match Spike_api.call (PriceOrder { customer; discount_pct; lines }) with
 | `#gen_ocaml` (`domain/Spike/Codec/OCaml.lean`) | writes OCaml types (structure → record, inductive → variant, clashing constructors prefixed), `enc_*`/`dec_*`, `encode_*`/`decode_*`, `decode_reply`, typed `call` | **unverified** generated code + ~70-line hand-written runtime `ocaml/api/wire_rt.ml`, checked differentially (below) |
 
 Wire format v2 is simply the `deriving Codec` layout: fields in order, a tag byte iff the type
-has more than one constructor **or is recursive**, `Nat` = LEB128, `List` = count + elements,
-`Except` = tag 0 ok / 1 error. Unsupported (clear errors): mutual inductives, nesting other than
-`List T` (e.g. `List (List T)`, `Except _ T`), parameters/indices, dependent fields, field types
-without a `Codec` instance, more than 255 constructors.
+has more than one constructor **or its block is recursive**, `Nat` = LEB128, `List` = count +
+elements, `Except` = tag 0 ok / 1 error. Unsupported (clear errors): indices, universe
+polymorphism, parameters that are not `Type`, nesting other than `List T` (e.g.
+`List (List T)`, `Except _ T`), dependent fields, deriving only part of a mutual block, field
+types without a `Codec` instance, more than 255 constructors.
+
+**Parametric types** (`Spike.Rules.Batch α`, `Spike.Rules.PTree α`): the instance is
+`[Codec α] → Codec (Batch α)`, and every generated definition and proof takes the parameters as
+`{α : Type} [Codec α]`. In OCaml the type gets type variables (`'p0 batch`) and its codecs take
+the parameters' codecs first (`enc_batch : 'p0. (Buffer.t -> 'p0 -> unit) -> Buffer.t -> 'p0
+batch -> unit`). All generated OCaml functions carry explicit polymorphic signatures, because a
+parametric codec used at two types inside one `let rec … and …` group (here `order batch` and
+`(quote, order_err) result batch`) does not type-check otherwise.
+
+**Mutual types** (`Spike.Rules.Cond` / `Rule`, with `List Rule` nested inside the block): the
+derive handler works on whole mutual blocks (`deriving instance Codec for Cond, Rule`). All
+encoders/decoders of the block are mutual structural definitions; the round trip is proved by
+one induction on the fuel whose statement is the conjunction over the block's types, then
+projected per type. A single type is just a block of one; the handler was restructured around
+blocks, and every existing type re-derives with a byte-identical wire format.
 
 **Nested recursion** (`List T` inside `T`; examples: `Spike.Bundle.Bundle`, product bundles
 with nested discounts, and `Spike.Bundle.Category`, a recursive *structure*):
@@ -150,6 +166,11 @@ pricing-formula language evaluated by the core):
 - Negative: `List (List T)`, `Except _ T` and mutual inductives are rejected with clear errors.
 - The audit caught a trusted-surface change: bundle pricing (`min d 100`) brought in a 9th
   runtime axiom, `Nat.decLe` (shipped `nat-inline.ml`: `dec_of_bool (Z.leq n m)`); now listed.
+- Parametric and mutual: 5,000 random batches (each item equals a single `priceOrder` call),
+  20,000 parametric trees (sum vs OCaml reference + echo), 20,000 mutual rule trees (discount
+  vs an OCaml reference evaluator + echo): 0 mismatches; all three in the mutation fuzz.
+  `Rule.discount_le_cap` (a rule never gives more than the largest percentage written in it)
+  is proved by mutual structural recursion. No new runtime axioms.
 - Decoder agreement, OCaml generated decoder vs Lean decoder: 200,000 random byte strings and
   100,000 mutated valid encodings (11,368 still decodable): 0 disagreements, every reply decodes.
 - Audit: derived instances and the v2 theorems use only `[propext, Quot.sound]`; the `api`
@@ -159,7 +180,8 @@ pricing-formula language evaluated by the core):
   10–40% (~0.1–0.5 µs per call).
 
 **Next steps (not done)**
-- Mutual and parametric types; nesting through containers other than `List`.
+- Nesting through containers other than `List` (`Option`, `Except`, user parametric types
+  such as `Batch T` inside `T`); universe-polymorphic types.
 - Depth-bounded codecs instead of a global request size cap.
 - Prove the OCaml side, or generate it from a verified description (today it is
   differential-tested, not proved).
@@ -494,6 +516,7 @@ domain/Spike/Codec/        deriving Codec handler (Derive.lean), OCaml generator
 domain/Spike/Api.lean      API types (single source of truth), handle (extracted as Api), #gen_ocaml
 domain/Spike/Formula.lean  recursive domain type (pricing formulas) + evaluator + monotonicity proof
 domain/Spike/Bundle.lean   nested recursive types (bundles with nested discounts, category tree) + price <= gross proof
+domain/Spike/Rules.lean    mutual (Cond/Rule discount rules) and parametric (Batch α, PTree α) types + discount <= cap proof
 ocaml/depth/               stack-depth probe for recursive types (DEPTHS=... to choose depths)
 ocaml/api/                 generated client spike_api.ml (+ hand-written runtime wire_rt.ml)
 scripts/audit.sh           proof-axiom, forbidden-construct and runtime-axiom audit

@@ -37,6 +37,23 @@ and bundle =
 
 and category = { id : Z.t; children : (category) list }
 
+and cond =
+  | MinQty of Z.t
+  | HasSku of Z.t
+  | Not of cond
+  | Both of cond * cond
+  | Fires of rule
+
+and rule =
+  | Pct of cond * Z.t
+  | Best of (rule) list
+
+and 'p0 batch = { items : ('p0) list }
+
+and 'p0 p_tree =
+  | Leaf of 'p0
+  | Node of ('p0 p_tree) list
+
 and request =
   | Request_gate1 of Z.t
   | PriceOrder of order
@@ -46,6 +63,11 @@ and request =
   | PriceBundle of bundle
   | EchoBundle of bundle
   | EchoCategory of category
+  | PriceBatch of order batch
+  | SumTree of Z.t p_tree
+  | EchoTree of Z.t p_tree
+  | ApplyRule of rule * order
+  | EchoRule of rule
 
 and response =
   | Response_gate1 of Z.t
@@ -55,12 +77,15 @@ and response =
   | Formula of formula
   | Bundle of bundle
   | Category of category
+  | Quotes of (quote, order_err) result batch
+  | Tree of Z.t p_tree
+  | Rule of rule
 
 and api_error =
   | Transport of err
   | Order of order_err
 
-let rec enc_err (b : Buffer.t) (x : err) : unit =
+let rec enc_err : Buffer.t -> err -> unit = fun b x ->
   match x with
     | Empty -> Wire_rt.tag b 0
     | NotBytes -> Wire_rt.tag b 1
@@ -70,20 +95,20 @@ let rec enc_err (b : Buffer.t) (x : err) : unit =
     | BadTag -> Wire_rt.tag b 5
     | TooLarge -> Wire_rt.tag b 6
 
-and enc_order_err (b : Buffer.t) (x : order_err) : unit =
+and enc_order_err : Buffer.t -> order_err -> unit = fun b x ->
   match x with
     | NoLines -> Wire_rt.tag b 0
     | ZeroQty -> Wire_rt.tag b 1
     | BadDiscount -> Wire_rt.tag b 2
     | DuplicateSku -> Wire_rt.tag b 3
 
-and enc_line (b : Buffer.t) (x : line) : unit = Wire_rt.enc_nat b x.sku; Wire_rt.enc_nat b x.qty; Wire_rt.enc_nat b x.unit_price
+and enc_line : Buffer.t -> line -> unit = fun b x -> Wire_rt.enc_nat b x.sku; Wire_rt.enc_nat b x.qty; Wire_rt.enc_nat b x.unit_price
 
-and enc_order (b : Buffer.t) (x : order) : unit = Wire_rt.enc_nat b x.customer; Wire_rt.enc_nat b x.discount_pct; (Wire_rt.enc_list enc_line) b x.lines
+and enc_order : Buffer.t -> order -> unit = fun b x -> Wire_rt.enc_nat b x.customer; Wire_rt.enc_nat b x.discount_pct; (Wire_rt.enc_list enc_line) b x.lines
 
-and enc_quote (b : Buffer.t) (x : quote) : unit = Wire_rt.enc_nat b x.subtotal; Wire_rt.enc_nat b x.discount; Wire_rt.enc_nat b x.total; Wire_rt.enc_nat b x.line_count
+and enc_quote : Buffer.t -> quote -> unit = fun b x -> Wire_rt.enc_nat b x.subtotal; Wire_rt.enc_nat b x.discount; Wire_rt.enc_nat b x.total; Wire_rt.enc_nat b x.line_count
 
-and enc_formula (b : Buffer.t) (x : formula) : unit =
+and enc_formula : Buffer.t -> formula -> unit = fun b x ->
   match x with
     | Lit (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
     | X -> Wire_rt.tag b 1
@@ -93,14 +118,34 @@ and enc_formula (b : Buffer.t) (x : formula) : unit =
     | Div (x0, x1) -> Wire_rt.tag b 5; enc_formula b x0; enc_formula b x1
     | IfLt (x0, x1, x2, x3) -> Wire_rt.tag b 6; enc_formula b x0; enc_formula b x1; enc_formula b x2; enc_formula b x3
 
-and enc_bundle (b : Buffer.t) (x : bundle) : unit =
+and enc_bundle : Buffer.t -> bundle -> unit = fun b x ->
   match x with
     | Item (x0, x1, x2) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0; Wire_rt.enc_nat b x1; Wire_rt.enc_nat b x2
     | Group (x0, x1) -> Wire_rt.tag b 1; Wire_rt.enc_nat b x0; (Wire_rt.enc_list enc_bundle) b x1
 
-and enc_category (b : Buffer.t) (x : category) : unit = Wire_rt.tag b 0; Wire_rt.enc_nat b x.id; (Wire_rt.enc_list enc_category) b x.children
+and enc_category : Buffer.t -> category -> unit = fun b x -> Wire_rt.tag b 0; Wire_rt.enc_nat b x.id; (Wire_rt.enc_list enc_category) b x.children
 
-and enc_request (b : Buffer.t) (x : request) : unit =
+and enc_cond : Buffer.t -> cond -> unit = fun b x ->
+  match x with
+    | MinQty (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
+    | HasSku (x0) -> Wire_rt.tag b 1; Wire_rt.enc_nat b x0
+    | Not (x0) -> Wire_rt.tag b 2; enc_cond b x0
+    | Both (x0, x1) -> Wire_rt.tag b 3; enc_cond b x0; enc_cond b x1
+    | Fires (x0) -> Wire_rt.tag b 4; enc_rule b x0
+
+and enc_rule : Buffer.t -> rule -> unit = fun b x ->
+  match x with
+    | Pct (x0, x1) -> Wire_rt.tag b 0; enc_cond b x0; Wire_rt.enc_nat b x1
+    | Best (x0) -> Wire_rt.tag b 1; (Wire_rt.enc_list enc_rule) b x0
+
+and enc_batch : 'p0. (Buffer.t -> 'p0 -> unit) -> Buffer.t -> 'p0 batch -> unit = fun pe0 b x -> (Wire_rt.enc_list pe0) b x.items
+
+and enc_p_tree : 'p0. (Buffer.t -> 'p0 -> unit) -> Buffer.t -> 'p0 p_tree -> unit = fun pe0 b x ->
+  match x with
+    | Leaf (x0) -> Wire_rt.tag b 0; pe0 b x0
+    | Node (x0) -> Wire_rt.tag b 1; (Wire_rt.enc_list (enc_p_tree pe0)) b x0
+
+and enc_request : Buffer.t -> request -> unit = fun b x ->
   match x with
     | Request_gate1 (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
     | PriceOrder (x0) -> Wire_rt.tag b 1; enc_order b x0
@@ -110,8 +155,13 @@ and enc_request (b : Buffer.t) (x : request) : unit =
     | PriceBundle (x0) -> Wire_rt.tag b 5; enc_bundle b x0
     | EchoBundle (x0) -> Wire_rt.tag b 6; enc_bundle b x0
     | EchoCategory (x0) -> Wire_rt.tag b 7; enc_category b x0
+    | PriceBatch (x0) -> Wire_rt.tag b 8; (enc_batch enc_order) b x0
+    | SumTree (x0) -> Wire_rt.tag b 9; (enc_p_tree Wire_rt.enc_nat) b x0
+    | EchoTree (x0) -> Wire_rt.tag b 10; (enc_p_tree Wire_rt.enc_nat) b x0
+    | ApplyRule (x0, x1) -> Wire_rt.tag b 11; enc_rule b x0; enc_order b x1
+    | EchoRule (x0) -> Wire_rt.tag b 12; enc_rule b x0
 
-and enc_response (b : Buffer.t) (x : response) : unit =
+and enc_response : Buffer.t -> response -> unit = fun b x ->
   match x with
     | Response_gate1 (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
     | Quote (x0) -> Wire_rt.tag b 1; enc_quote b x0
@@ -120,13 +170,16 @@ and enc_response (b : Buffer.t) (x : response) : unit =
     | Formula (x0) -> Wire_rt.tag b 4; enc_formula b x0
     | Bundle (x0) -> Wire_rt.tag b 5; enc_bundle b x0
     | Category (x0) -> Wire_rt.tag b 6; enc_category b x0
+    | Quotes (x0) -> Wire_rt.tag b 7; (enc_batch (Wire_rt.enc_except enc_quote enc_order_err)) b x0
+    | Tree (x0) -> Wire_rt.tag b 8; (enc_p_tree Wire_rt.enc_nat) b x0
+    | Rule (x0) -> Wire_rt.tag b 9; enc_rule b x0
 
-and enc_api_error (b : Buffer.t) (x : api_error) : unit =
+and enc_api_error : Buffer.t -> api_error -> unit = fun b x ->
   match x with
     | Transport (x0) -> Wire_rt.tag b 0; enc_err b x0
     | Order (x0) -> Wire_rt.tag b 1; enc_order_err b x0
 
-let rec dec_err (c : Wire_rt.cursor) : err =
+let rec dec_err : Wire_rt.cursor -> err = fun c ->
   match Wire_rt.byte c with
     | 0 -> Empty
     | 1 -> NotBytes
@@ -137,7 +190,7 @@ let rec dec_err (c : Wire_rt.cursor) : err =
     | 6 -> TooLarge
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_order_err (c : Wire_rt.cursor) : order_err =
+and dec_order_err : Wire_rt.cursor -> order_err = fun c ->
   match Wire_rt.byte c with
     | 0 -> NoLines
     | 1 -> ZeroQty
@@ -145,13 +198,13 @@ and dec_order_err (c : Wire_rt.cursor) : order_err =
     | 3 -> DuplicateSku
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_line (c : Wire_rt.cursor) : line = let f_sku = Wire_rt.dec_nat c in let f_qty = Wire_rt.dec_nat c in let f_unit_price = Wire_rt.dec_nat c in ({ sku = f_sku; qty = f_qty; unit_price = f_unit_price } : line)
+and dec_line : Wire_rt.cursor -> line = fun c -> let f_sku = Wire_rt.dec_nat c in let f_qty = Wire_rt.dec_nat c in let f_unit_price = Wire_rt.dec_nat c in ({ sku = f_sku; qty = f_qty; unit_price = f_unit_price } : line)
 
-and dec_order (c : Wire_rt.cursor) : order = let f_customer = Wire_rt.dec_nat c in let f_discount_pct = Wire_rt.dec_nat c in let f_lines = (Wire_rt.dec_list dec_line) c in ({ customer = f_customer; discount_pct = f_discount_pct; lines = f_lines } : order)
+and dec_order : Wire_rt.cursor -> order = fun c -> let f_customer = Wire_rt.dec_nat c in let f_discount_pct = Wire_rt.dec_nat c in let f_lines = (Wire_rt.dec_list dec_line) c in ({ customer = f_customer; discount_pct = f_discount_pct; lines = f_lines } : order)
 
-and dec_quote (c : Wire_rt.cursor) : quote = let f_subtotal = Wire_rt.dec_nat c in let f_discount = Wire_rt.dec_nat c in let f_total = Wire_rt.dec_nat c in let f_line_count = Wire_rt.dec_nat c in ({ subtotal = f_subtotal; discount = f_discount; total = f_total; line_count = f_line_count } : quote)
+and dec_quote : Wire_rt.cursor -> quote = fun c -> let f_subtotal = Wire_rt.dec_nat c in let f_discount = Wire_rt.dec_nat c in let f_total = Wire_rt.dec_nat c in let f_line_count = Wire_rt.dec_nat c in ({ subtotal = f_subtotal; discount = f_discount; total = f_total; line_count = f_line_count } : quote)
 
-and dec_formula (c : Wire_rt.cursor) : formula =
+and dec_formula : Wire_rt.cursor -> formula = fun c ->
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in Lit (x0)
     | 1 -> X
@@ -162,15 +215,38 @@ and dec_formula (c : Wire_rt.cursor) : formula =
     | 6 -> let x0 = dec_formula c in let x1 = dec_formula c in let x2 = dec_formula c in let x3 = dec_formula c in IfLt (x0, x1, x2, x3)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_bundle (c : Wire_rt.cursor) : bundle =
+and dec_bundle : Wire_rt.cursor -> bundle = fun c ->
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in let x1 = Wire_rt.dec_nat c in let x2 = Wire_rt.dec_nat c in Item (x0, x1, x2)
     | 1 -> let x0 = Wire_rt.dec_nat c in let x1 = (Wire_rt.dec_list dec_bundle) c in Group (x0, x1)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_category (c : Wire_rt.cursor) : category = (if Wire_rt.byte c <> 0 then raise (Wire_rt.Decode_error Wire_rt.bad_tag)); let f_id = Wire_rt.dec_nat c in let f_children = (Wire_rt.dec_list dec_category) c in ({ id = f_id; children = f_children } : category)
+and dec_category : Wire_rt.cursor -> category = fun c -> (if Wire_rt.byte c <> 0 then raise (Wire_rt.Decode_error Wire_rt.bad_tag)); let f_id = Wire_rt.dec_nat c in let f_children = (Wire_rt.dec_list dec_category) c in ({ id = f_id; children = f_children } : category)
 
-and dec_request (c : Wire_rt.cursor) : request =
+and dec_cond : Wire_rt.cursor -> cond = fun c ->
+  match Wire_rt.byte c with
+    | 0 -> let x0 = Wire_rt.dec_nat c in MinQty (x0)
+    | 1 -> let x0 = Wire_rt.dec_nat c in HasSku (x0)
+    | 2 -> let x0 = dec_cond c in Not (x0)
+    | 3 -> let x0 = dec_cond c in let x1 = dec_cond c in Both (x0, x1)
+    | 4 -> let x0 = dec_rule c in Fires (x0)
+    | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
+
+and dec_rule : Wire_rt.cursor -> rule = fun c ->
+  match Wire_rt.byte c with
+    | 0 -> let x0 = dec_cond c in let x1 = Wire_rt.dec_nat c in Pct (x0, x1)
+    | 1 -> let x0 = (Wire_rt.dec_list dec_rule) c in Best (x0)
+    | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
+
+and dec_batch : 'p0. (Wire_rt.cursor -> 'p0) -> Wire_rt.cursor -> 'p0 batch = fun pd0 c -> let f_items = (Wire_rt.dec_list pd0) c in ({ items = f_items } : 'p0 batch)
+
+and dec_p_tree : 'p0. (Wire_rt.cursor -> 'p0) -> Wire_rt.cursor -> 'p0 p_tree = fun pd0 c ->
+  match Wire_rt.byte c with
+    | 0 -> let x0 = pd0 c in Leaf (x0)
+    | 1 -> let x0 = (Wire_rt.dec_list (dec_p_tree pd0)) c in Node (x0)
+    | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
+
+and dec_request : Wire_rt.cursor -> request = fun c ->
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in Request_gate1 (x0)
     | 1 -> let x0 = dec_order c in PriceOrder (x0)
@@ -180,9 +256,14 @@ and dec_request (c : Wire_rt.cursor) : request =
     | 5 -> let x0 = dec_bundle c in PriceBundle (x0)
     | 6 -> let x0 = dec_bundle c in EchoBundle (x0)
     | 7 -> let x0 = dec_category c in EchoCategory (x0)
+    | 8 -> let x0 = (dec_batch dec_order) c in PriceBatch (x0)
+    | 9 -> let x0 = (dec_p_tree Wire_rt.dec_nat) c in SumTree (x0)
+    | 10 -> let x0 = (dec_p_tree Wire_rt.dec_nat) c in EchoTree (x0)
+    | 11 -> let x0 = dec_rule c in let x1 = dec_order c in ApplyRule (x0, x1)
+    | 12 -> let x0 = dec_rule c in EchoRule (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_response (c : Wire_rt.cursor) : response =
+and dec_response : Wire_rt.cursor -> response = fun c ->
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in Response_gate1 (x0)
     | 1 -> let x0 = dec_quote c in Quote (x0)
@@ -191,9 +272,12 @@ and dec_response (c : Wire_rt.cursor) : response =
     | 4 -> let x0 = dec_formula c in Formula (x0)
     | 5 -> let x0 = dec_bundle c in Bundle (x0)
     | 6 -> let x0 = dec_category c in Category (x0)
+    | 7 -> let x0 = (dec_batch (Wire_rt.dec_except dec_quote dec_order_err)) c in Quotes (x0)
+    | 8 -> let x0 = (dec_p_tree Wire_rt.dec_nat) c in Tree (x0)
+    | 9 -> let x0 = dec_rule c in Rule (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
-and dec_api_error (c : Wire_rt.cursor) : api_error =
+and dec_api_error : Wire_rt.cursor -> api_error = fun c ->
   match Wire_rt.byte c with
     | 0 -> let x0 = dec_err c in Transport (x0)
     | 1 -> let x0 = dec_order_err c in Order (x0)
@@ -215,6 +299,14 @@ let encode_bundle (x : bundle) : bytes = Wire_rt.to_bytes enc_bundle x
 let decode_bundle (bs : bytes) : (bundle, int) result = Wire_rt.decode dec_bundle bs
 let encode_category (x : category) : bytes = Wire_rt.to_bytes enc_category x
 let decode_category (bs : bytes) : (category, int) result = Wire_rt.decode dec_category bs
+let encode_cond (x : cond) : bytes = Wire_rt.to_bytes enc_cond x
+let decode_cond (bs : bytes) : (cond, int) result = Wire_rt.decode dec_cond bs
+let encode_rule (x : rule) : bytes = Wire_rt.to_bytes enc_rule x
+let decode_rule (bs : bytes) : (rule, int) result = Wire_rt.decode dec_rule bs
+let encode_batch pe0 x = Wire_rt.to_bytes (enc_batch pe0 ) x
+let decode_batch pd0 bs = Wire_rt.decode (dec_batch pd0 ) bs
+let encode_p_tree pe0 x = Wire_rt.to_bytes (enc_p_tree pe0 ) x
+let decode_p_tree pd0 bs = Wire_rt.decode (dec_p_tree pd0 ) bs
 let encode_request (x : request) : bytes = Wire_rt.to_bytes enc_request x
 let decode_request (bs : bytes) : (request, int) result = Wire_rt.decode dec_request bs
 let encode_response (x : response) : bytes = Wire_rt.to_bytes enc_response x
