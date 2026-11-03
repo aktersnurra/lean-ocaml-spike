@@ -5,6 +5,9 @@
 def__Nat_add
 def__Nat_beq
 def__Nat_decEq
+# decLe: added with the generator work (Spike.Bundle uses `min d 100`). nat-inline.ml:
+#   def__Nat_decLe n m = Decidable.dec_of_bool @@ def__Nat_ble n m, with ble = Z.leq.
+def__Nat_decLe
 def__Nat_decLt
 def__Nat_div
 def__Nat_mod

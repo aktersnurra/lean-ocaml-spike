@@ -88,10 +88,25 @@ match Spike_api.call (PriceOrder { customer; discount_pct; lines }) with
 | `#gen_ocaml` (`domain/Spike/Codec/OCaml.lean`) | writes OCaml types (structure → record, inductive → variant, clashing constructors prefixed), `enc_*`/`dec_*`, `encode_*`/`decode_*`, `decode_reply`, typed `call` | **unverified** generated code + ~70-line hand-written runtime `ocaml/api/wire_rt.ml`, checked differentially (below) |
 
 Wire format v2 is simply the `deriving Codec` layout: fields in order, a tag byte iff the type
-has more than one constructor, `Nat` = LEB128, `List` = count + elements, `Except` = tag 0 ok /
-1 error. Unsupported (clear errors): nested or mutual recursion (e.g. `List T` inside `T`),
-parameters/indices, dependent fields, field types without a `Codec` instance, more than 255
-constructors.
+has more than one constructor **or is recursive**, `Nat` = LEB128, `List` = count + elements,
+`Except` = tag 0 ok / 1 error. Unsupported (clear errors): mutual inductives, nesting other than
+`List T` (e.g. `List (List T)`, `Except _ T`), parameters/indices, dependent fields, field types
+without a `Codec` instance, more than 255 constructors.
+
+**Nested recursion** (`List T` inside `T`; examples: `Spike.Bundle.Bundle`, product bundles
+with nested discounts, and `Spike.Bundle.Category`, a recursive *structure*):
+- Encoders are generated as mutual structural definitions over `T` and `List T`
+  (`codecEncSpec`/`codecEncSpecList` for proofs, `codecEncAux`/`codecEncAuxList` at runtime);
+  the decoder decodes `List T` fields with the generic list decoder applied to the
+  fuel-indexed `codecDecAux f`. All structural (`termination_by structural`), no
+  well-founded recursion; extraction verified end to end on a hand-written prototype first.
+- The round trip is proved by **induction on the fuel**, not on the value, so no nested
+  induction is needed: two generic lemmas in `Spike.Wire` (`decodeList_fuel`: list decoding
+  round-trips when the element decoder does under a fuel bound; `length_le_of_mem_encodeElems`)
+  do the list part. Direct recursion uses the same scheme now.
+- Recursive types always carry a tag byte, even with one constructor (so a rose tree or a
+  recursive structure works): every node then consumes at least one byte, which the fuel
+  argument needs. Cost: one byte per node.
 
 **Recursive types** (a field of type `T` inside `T`; example: `Spike.Formula.Formula`, a
 pricing-formula language evaluated by the core):
@@ -129,6 +144,12 @@ pricing-formula language evaluated by the core):
   echo round trips are exact; formulas also included in the mutation fuzz.
 - Size limit: 65,536-byte request served, 65,537 rejected with `TooLarge`; a 1M-level formula
   (3 MB) is rejected instead of overflowing the stack.
+- 20,000 random bundles (price vs OCaml reference, echo) and category trees (echo): 0
+  mismatches; both in the mutation fuzz; a 15k-level nested bundle is priced, a 300k-level
+  one is rejected with `TooLarge`.
+- Negative: `List (List T)`, `Except _ T` and mutual inductives are rejected with clear errors.
+- The audit caught a trusted-surface change: bundle pricing (`min d 100`) brought in a 9th
+  runtime axiom, `Nat.decLe` (shipped `nat-inline.ml`: `dec_of_bool (Z.leq n m)`); now listed.
 - Decoder agreement, OCaml generated decoder vs Lean decoder: 200,000 random byte strings and
   100,000 mutated valid encodings (11,368 still decodable): 0 disagreements, every reply decodes.
 - Audit: derived instances and the v2 theorems use only `[propext, Quot.sound]`; the `api`
@@ -138,7 +159,7 @@ pricing-formula language evaluated by the core):
   10–40% (~0.1–0.5 µs per call).
 
 **Next steps (not done)**
-- Nested recursion (`List T` inside `T`, rose trees), mutual and parametric types.
+- Mutual and parametric types; nesting through containers other than `List`.
 - Depth-bounded codecs instead of a global request size cap.
 - Prove the OCaml side, or generate it from a verified description (today it is
   differential-tested, not proved).
@@ -213,7 +234,7 @@ extracted core was 7.6x–13x native (which fails the target). Peregrine's optio
 
 ### Runtime axiom surface (trusted, unverified)
 
-The extracted core references exactly these OCaml functions (`scripts/runtime-axioms.txt`,
+The extracted core references exactly these OCaml functions (9 since the generator work added `Nat.decLe`; 8 before) (`scripts/runtime-axioms.txt`,
 enforced by `scripts/audit.sh`), all from upstream `nat-inline.ml` at `L2L_REV`, with Lean
 `Nat` = Zarith `Z.t`:
 
@@ -221,7 +242,7 @@ enforced by `scripts/audit.sh`), all from upstream `nat-inline.ml` at `L2L_REV`,
 |-------|----------------------|--------------|
 | `Nat.add`, `Nat.sub`, `Nat.mul` | `Z.add`; `if n <= m then 0 else Z.sub n m` (saturating, as Lean); `Z.mul` | varint decode, subtotal, discount |
 | `Nat.div`, `Nat.mod` | `if m = 0 then 0 else Z.ediv n m`; `if m = 0 then n else Z.erem n m` (Lean's division-by-zero semantics) | varint encode (`/128`, `%128`), discount `/100` |
-| `Nat.beq`, `Nat.decEq`, `Nat.decLt` | `Z.equal`, `Z.lt` → `Decidable` via `dec_of_bool` | op dispatch, byte/terminator checks, RBMap compare |
+| `Nat.beq`, `Nat.decEq`, `Nat.decLt`, `Nat.decLe` | `Z.equal`, `Z.lt`, `Z.leq` → `Decidable` via `dec_of_bool` | op dispatch, byte/terminator checks, RBMap compare; `decLe` since the generator work (`min` in `Spike.Bundle`) |
 
 Also linked but not referenced: `Int`, `Eq`, `LeanArray` (Filliâtre's persistent arrays, which
 **mutate internally**; not safe to share across domains, unused by this core).
@@ -472,6 +493,7 @@ domain/Spike/Codec.lean    Codec class (codec + proofs), base instances
 domain/Spike/Codec/        deriving Codec handler (Derive.lean), OCaml generator (OCaml.lean)
 domain/Spike/Api.lean      API types (single source of truth), handle (extracted as Api), #gen_ocaml
 domain/Spike/Formula.lean  recursive domain type (pricing formulas) + evaluator + monotonicity proof
+domain/Spike/Bundle.lean   nested recursive types (bundles with nested discounts, category tree) + price <= gross proof
 ocaml/depth/               stack-depth probe for recursive types (DEPTHS=... to choose depths)
 ocaml/api/                 generated client spike_api.ml (+ hand-written runtime wire_rt.ml)
 scripts/audit.sh           proof-axiom, forbidden-construct and runtime-axiom audit

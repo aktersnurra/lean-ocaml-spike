@@ -31,12 +31,21 @@ and formula =
   | Div of formula * formula
   | IfLt of formula * formula * formula * formula
 
+and bundle =
+  | Item of Z.t * Z.t * Z.t
+  | Group of Z.t * (bundle) list
+
+and category = { id : Z.t; children : (category) list }
+
 and request =
   | Request_gate1 of Z.t
   | PriceOrder of order
   | Echo of order
   | EvalFormula of formula * Z.t
   | EchoFormula of formula
+  | PriceBundle of bundle
+  | EchoBundle of bundle
+  | EchoCategory of category
 
 and response =
   | Response_gate1 of Z.t
@@ -44,6 +53,8 @@ and response =
   | Echoed of order
   | Value of Z.t
   | Formula of formula
+  | Bundle of bundle
+  | Category of category
 
 and api_error =
   | Transport of err
@@ -82,6 +93,13 @@ and enc_formula (b : Buffer.t) (x : formula) : unit =
     | Div (x0, x1) -> Wire_rt.tag b 5; enc_formula b x0; enc_formula b x1
     | IfLt (x0, x1, x2, x3) -> Wire_rt.tag b 6; enc_formula b x0; enc_formula b x1; enc_formula b x2; enc_formula b x3
 
+and enc_bundle (b : Buffer.t) (x : bundle) : unit =
+  match x with
+    | Item (x0, x1, x2) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0; Wire_rt.enc_nat b x1; Wire_rt.enc_nat b x2
+    | Group (x0, x1) -> Wire_rt.tag b 1; Wire_rt.enc_nat b x0; (Wire_rt.enc_list enc_bundle) b x1
+
+and enc_category (b : Buffer.t) (x : category) : unit = Wire_rt.tag b 0; Wire_rt.enc_nat b x.id; (Wire_rt.enc_list enc_category) b x.children
+
 and enc_request (b : Buffer.t) (x : request) : unit =
   match x with
     | Request_gate1 (x0) -> Wire_rt.tag b 0; Wire_rt.enc_nat b x0
@@ -89,6 +107,9 @@ and enc_request (b : Buffer.t) (x : request) : unit =
     | Echo (x0) -> Wire_rt.tag b 2; enc_order b x0
     | EvalFormula (x0, x1) -> Wire_rt.tag b 3; enc_formula b x0; Wire_rt.enc_nat b x1
     | EchoFormula (x0) -> Wire_rt.tag b 4; enc_formula b x0
+    | PriceBundle (x0) -> Wire_rt.tag b 5; enc_bundle b x0
+    | EchoBundle (x0) -> Wire_rt.tag b 6; enc_bundle b x0
+    | EchoCategory (x0) -> Wire_rt.tag b 7; enc_category b x0
 
 and enc_response (b : Buffer.t) (x : response) : unit =
   match x with
@@ -97,6 +118,8 @@ and enc_response (b : Buffer.t) (x : response) : unit =
     | Echoed (x0) -> Wire_rt.tag b 2; enc_order b x0
     | Value (x0) -> Wire_rt.tag b 3; Wire_rt.enc_nat b x0
     | Formula (x0) -> Wire_rt.tag b 4; enc_formula b x0
+    | Bundle (x0) -> Wire_rt.tag b 5; enc_bundle b x0
+    | Category (x0) -> Wire_rt.tag b 6; enc_category b x0
 
 and enc_api_error (b : Buffer.t) (x : api_error) : unit =
   match x with
@@ -139,6 +162,14 @@ and dec_formula (c : Wire_rt.cursor) : formula =
     | 6 -> let x0 = dec_formula c in let x1 = dec_formula c in let x2 = dec_formula c in let x3 = dec_formula c in IfLt (x0, x1, x2, x3)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
+and dec_bundle (c : Wire_rt.cursor) : bundle =
+  match Wire_rt.byte c with
+    | 0 -> let x0 = Wire_rt.dec_nat c in let x1 = Wire_rt.dec_nat c in let x2 = Wire_rt.dec_nat c in Item (x0, x1, x2)
+    | 1 -> let x0 = Wire_rt.dec_nat c in let x1 = (Wire_rt.dec_list dec_bundle) c in Group (x0, x1)
+    | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
+
+and dec_category (c : Wire_rt.cursor) : category = (if Wire_rt.byte c <> 0 then raise (Wire_rt.Decode_error Wire_rt.bad_tag)); let f_id = Wire_rt.dec_nat c in let f_children = (Wire_rt.dec_list dec_category) c in ({ id = f_id; children = f_children } : category)
+
 and dec_request (c : Wire_rt.cursor) : request =
   match Wire_rt.byte c with
     | 0 -> let x0 = Wire_rt.dec_nat c in Request_gate1 (x0)
@@ -146,6 +177,9 @@ and dec_request (c : Wire_rt.cursor) : request =
     | 2 -> let x0 = dec_order c in Echo (x0)
     | 3 -> let x0 = dec_formula c in let x1 = Wire_rt.dec_nat c in EvalFormula (x0, x1)
     | 4 -> let x0 = dec_formula c in EchoFormula (x0)
+    | 5 -> let x0 = dec_bundle c in PriceBundle (x0)
+    | 6 -> let x0 = dec_bundle c in EchoBundle (x0)
+    | 7 -> let x0 = dec_category c in EchoCategory (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
 and dec_response (c : Wire_rt.cursor) : response =
@@ -155,6 +189,8 @@ and dec_response (c : Wire_rt.cursor) : response =
     | 2 -> let x0 = dec_order c in Echoed (x0)
     | 3 -> let x0 = Wire_rt.dec_nat c in Value (x0)
     | 4 -> let x0 = dec_formula c in Formula (x0)
+    | 5 -> let x0 = dec_bundle c in Bundle (x0)
+    | 6 -> let x0 = dec_category c in Category (x0)
     | _ -> raise (Wire_rt.Decode_error Wire_rt.bad_tag)
 
 and dec_api_error (c : Wire_rt.cursor) : api_error =
@@ -175,6 +211,10 @@ let encode_quote (x : quote) : bytes = Wire_rt.to_bytes enc_quote x
 let decode_quote (bs : bytes) : (quote, int) result = Wire_rt.decode dec_quote bs
 let encode_formula (x : formula) : bytes = Wire_rt.to_bytes enc_formula x
 let decode_formula (bs : bytes) : (formula, int) result = Wire_rt.decode dec_formula bs
+let encode_bundle (x : bundle) : bytes = Wire_rt.to_bytes enc_bundle x
+let decode_bundle (bs : bytes) : (bundle, int) result = Wire_rt.decode dec_bundle bs
+let encode_category (x : category) : bytes = Wire_rt.to_bytes enc_category x
+let decode_category (bs : bytes) : (category, int) result = Wire_rt.decode dec_category bs
 let encode_request (x : request) : bytes = Wire_rt.to_bytes enc_request x
 let decode_request (bs : bytes) : (request, int) result = Wire_rt.decode dec_request bs
 let encode_response (x : response) : bytes = Wire_rt.to_bytes enc_response x

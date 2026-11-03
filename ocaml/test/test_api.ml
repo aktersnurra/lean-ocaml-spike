@@ -21,6 +21,8 @@ let pp = function
   | Ok (Echoed o) -> Printf.sprintf "echoed (%d lines)" (List.length o.lines)
   | Ok (Value n) -> "value " ^ Z.to_string n
   | Ok (Formula _) -> "formula"
+  | Ok (Bundle _) -> "bundle"
+  | Ok (Category _) -> "category"
   | Error (Transport e) -> "transport " ^ pp_err e
   | Error (Order e) -> "order " ^ pp_oe e
 
@@ -117,9 +119,14 @@ let () =
   for _ = 1 to n_mut do
     let rec rf d = if d = 0 then (if Random.bool () then Lit (rz ()) else X) else
       match Random.int 5 with 0 -> Lit (rz ()) | 1 -> X | 2 -> Add (rf (d-1), rf (d-1)) | 3 -> Div (rf (d-1), rf (d-1)) | _ -> IfLt (rf (d-1), rf (d-1), rf (d-1), rf (d-1)) in
-    let r = match Random.int 5 with
+    let rec rb d = if d = 0 || Random.int 3 = 0 then Item (rz (), rz (), rz ())
+      else Group (z (Random.int 120), List.init (Random.int 4) (fun _ -> rb (d - 1))) in
+    let rec rc d = { id = rz (); children = if d = 0 then [] else List.init (Random.int 3) (fun _ -> rc (d - 1)) } in
+    let r = match Random.int 8 with
       | 0 -> Request_gate1 (rz ()) | 1 -> PriceOrder (ro ()) | 2 -> Echo (ro ())
-      | 3 -> EvalFormula (rf (Random.int 5), rz ()) | _ -> EchoFormula (rf (Random.int 5)) in
+      | 3 -> EvalFormula (rf (Random.int 5), rz ()) | 4 -> EchoFormula (rf (Random.int 5))
+      | 5 -> PriceBundle (rb (Random.int 4)) | 6 -> EchoBundle (rb (Random.int 4))
+      | _ -> EchoCategory (rc (Random.int 4)) in
     let s = ref (Bytes.to_string (encode_request r)) in
     for _ = 1 to 1 + Random.int 3 do s := mutate (Bytes.of_string !s) done;
     let bs = Bytes.of_string !s in
@@ -158,4 +165,45 @@ let () =
   Printf.printf "formulas: %d random (depth <= 6), eval + echo, %d mismatches\n" n_f !bad;
   expect "formula: if x < 10 then 2x else x-1 (x=3)" (call (EvalFormula (IfLt (X, Lit (z 10), Mul (Lit (z 2), X), Sub (X, Lit (z 1))), z 3))) (Ok (Value (z 6)));
   expect "formula: div by zero = 0" (call (EvalFormula (Div (X, Lit Z.zero), z 7))) (Ok (Value Z.zero));
+  print_endline "-- nested recursion: Bundle (List Bundle inside Bundle), Category (recursive structure)";
+  let rec ref_price = function
+    | Item (_, q, p) -> Z.mul q p
+    | Group (d, ps) ->
+      let s = List.fold_left (fun a b -> Z.add a (ref_price b)) Z.zero ps in
+      let d = if Z.gt d (z 100) then z 100 else d in
+      Z.sub s (Z.div (Z.mul s d) (z 100)) in
+  let rec rb d = if d = 0 || Random.int 4 = 0 then Item (rz (), rz (), rz ())
+    else Group (z (Random.int 130), List.init (Random.int 5) (fun _ -> rb (d - 1))) in
+  let rec rc d = { id = rz (); children = if d = 0 then [] else List.init (Random.int 4) (fun _ -> rc (d - 1)) } in
+  let n_b = 20_000 and bad = ref 0 in
+  for _ = 1 to n_b do
+    let b = rb (Random.int 6) in
+    (match call (PriceBundle b) with
+     | Ok (Value v) when Z.equal v (ref_price b) -> ()
+     | r -> incr bad; if !bad < 5 then fail "bundle price mismatch: %s" (pp r));
+    (match call (EchoBundle b) with
+     | Ok (Bundle b') when b' = b -> ()
+     | r -> incr bad; if !bad < 5 then fail "bundle echo mismatch: %s" (pp r));
+    let c = rc (Random.int 5) in
+    (match call (EchoCategory c) with
+     | Ok (Category c') when c' = c -> ()
+     | r -> incr bad; if !bad < 5 then fail "category echo mismatch: %s" (pp r))
+  done;
+  Printf.printf "bundles/categories: %d random each, price + echo, %d mismatches\n" n_b !bad;
+  expect "bundle: 10%% off (2x150 + 5%% off (100))" (call (PriceBundle (Group (z 10, [ Item (z 1, z 2, z 150); Group (z 5, [ Item (z 2, z 1, z 100) ]) ]))))
+    (Ok (Value (z 356)));
+  expect "empty group" (call (PriceBundle (Group (z 50, [])))) (Ok (Value Z.zero));
+  expect "empty category" (call (EchoCategory { id = z 1; children = [] })) (Ok (Category { id = z 1; children = [] }));
+  (* deep nesting: Group(0,[Group(0,[... Item(1,2,3) ...])]), built as raw bytes (the OCaml
+     encoder would itself recurse 300k deep). Tags are taken from the generated encoder. *)
+  let tag_of r = String.make 1 (Bytes.get (encode_request r) 0) in
+  let price_bundle_tag = tag_of (PriceBundle (Item (z 0, z 0, z 0))) in
+  let item_bytes = Bytes.to_string (encode_bundle (Item (z 1, z 2, z 3))) in
+  let group_prefix = let e = Bytes.to_string (encode_bundle (Group (z 0, [ Item (z 1, z 2, z 3) ]))) in
+    String.sub e 0 (String.length e - String.length item_bytes) in
+  let deep_bundle n = String.concat "" (List.init n (fun _ -> group_prefix)) ^ item_bytes in
+  let shallow = Group (z 0, [ Group (z 0, [ Item (z 1, z 2, z 3) ]) ]) in
+  if deep_bundle 2 <> Bytes.to_string (encode_bundle shallow) then fail "deep_bundle builder disagrees with the generated encoder";
+  raw "deep bundle, 15k levels (45 KB)" (price_bundle_tag ^ deep_bundle 15_000) (Ok (Value (z 6)));
+  raw "deep bundle, 300k levels (900 KB)" (price_bundle_tag ^ deep_bundle 300_000) (Error (Transport TooLarge));
   if !failures > 0 then (Printf.printf "%d FAILURES\n" !failures; exit 1) else print_endline "== generated client tests PASSED =="
