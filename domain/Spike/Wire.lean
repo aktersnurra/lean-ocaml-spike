@@ -155,6 +155,46 @@ theorem decodeList_encodeList (enc : α → Bytes) (dec : Bytes → Except Err (
   simp [decodeList, encodeList, List.append_assoc, decodeNat_encodeNat,
     decodeElems_encodeElems enc dec hdec]
 
+/-! Nested recursion support (`List T` inside a recursive `T`, see `deriving Codec`):
+list decoding when the element decoder only round-trips under a fuel bound. -/
+
+theorem length_le_of_mem_encodeElems (enc : α → Bytes) {x : α} {xs : List α} (h : x ∈ xs) :
+    (enc x).length ≤ (encodeElems enc xs).length := by
+  induction xs with
+  | nil => cases h
+  | cons y ys ih =>
+    simp only [encodeElems, List.length_append]
+    cases h with
+    | head => exact Nat.le_add_right _ _
+    | tail _ h' => exact Nat.le_trans (ih h') (Nat.le_add_left _ _)
+
+theorem decodeElemsAux_fuel (dec : Bytes → Except Err (α × Bytes)) (enc : α → Bytes) (f : Nat)
+    (ih : ∀ x rest, (enc x).length ≤ f → dec (enc x ++ rest) = .ok (x, rest))
+    (xs acc : List α) (rest : Bytes) (h : (encodeElems enc xs).length ≤ f) :
+    decodeElemsAux dec xs.length acc (encodeElems enc xs ++ rest) = .ok (acc.reverse ++ xs, rest) := by
+  induction xs generalizing acc with
+  | nil => simp [encodeElems, decodeElemsAux]
+  | cons x xs ihxs =>
+    simp only [encodeElems, List.length_append] at h
+    have hx : (enc x).length ≤ f := Nat.le_trans (Nat.le_add_right _ _) h
+    have hxs : (encodeElems enc xs).length ≤ f := Nat.le_trans (Nat.le_add_left _ _) h
+    simp [encodeElems, decodeElemsAux, List.append_assoc, ih x _ hx, ihxs (x :: acc) hxs]
+
+/-- Shape used by derived proofs: count, then elements, then the rest. -/
+theorem decodeList_fuel (dec : Bytes → Except Err (α × Bytes)) (enc : α → Bytes) (f : Nat)
+    (ih : ∀ x rest, (enc x).length ≤ f → dec (enc x ++ rest) = .ok (x, rest))
+    (xs : List α) (rest : Bytes) (h : (encodeElems enc xs).length ≤ f) :
+    decodeList dec (encodeNat xs.length ++ (encodeElems enc xs ++ rest)) = .ok (xs, rest) := by
+  simp [decodeList, decodeNat_encodeNat, decodeElems, decodeElemsAux_fuel dec enc f ih xs [] rest h]
+
+theorem allBytes_encodeElems (enc : α → Bytes) (xs : List α)
+    (henc : ∀ x ∈ xs, allBytes (enc x) = true) : allBytes (encodeElems enc xs) = true := by
+  induction xs with
+  | nil => simp [encodeElems, allBytes]
+  | cons x xs ih =>
+    simp only [encodeElems, allBytes_append, henc x (List.mem_cons_self ..), Bool.true_and]
+    exact ih (fun y hy => henc y (List.mem_cons_of_mem _ hy))
+
 theorem allBytes_encodeList (enc : α → Bytes) (henc : ∀ x, allBytes (enc x) = true)
     (xs : List α) : allBytes (encodeList enc xs) = true := by
   simp only [encodeList, allBytes_append, allBytes_encodeNat, Bool.true_and]

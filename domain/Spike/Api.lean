@@ -2,6 +2,7 @@ import LeanToLambdaBox
 import Spike.Gate1
 import Spike.Order
 import Spike.Formula
+import Spike.Bundle
 import Spike.Codec.Derive
 import Spike.Codec.OCaml
 
@@ -18,9 +19,9 @@ boundary. From them:
 -/
 
 namespace Spike.Api
-open Spike.Wire Spike.Order Spike.Formula
+open Spike.Wire Spike.Order Spike.Formula Spike.Bundle
 
-deriving instance Codec for Err, OrderErr, Line, Order, Quote, Formula
+deriving instance Codec for Err, OrderErr, Line, Order, Quote, Formula, Bundle, Category
 
 inductive Request where
   | gate1 (n : Nat)
@@ -28,6 +29,9 @@ inductive Request where
   | echo (o : Order)        -- returns its argument; used to test the generated codecs
   | evalFormula (f : Formula) (v : Nat)
   | echoFormula (f : Formula)
+  | priceBundle (b : Bundle)
+  | echoBundle (b : Bundle)
+  | echoCategory (c : Category)
 deriving Codec
 
 inductive Response where
@@ -36,6 +40,8 @@ inductive Response where
   | echoed (o : Order)
   | value (n : Nat)
   | formula (f : Formula)
+  | bundle (b : Bundle)
+  | category (c : Category)
 deriving Codec
 
 inductive ApiError where
@@ -53,6 +59,9 @@ def serve : Request → Except ApiError Response
   | .echo o => .ok (.echoed o)
   | .evalFormula f v => .ok (.value (f.eval v))
   | .echoFormula f => .ok (.formula f)
+  | .priceBundle b => .ok (.value b.price)
+  | .echoBundle b => .ok (.bundle b)
+  | .echoCategory c => .ok (.category c)
 
 /-- Request size limit. Recursive request types (`Formula`) are decoded and evaluated by
 non-tail recursion whose depth can reach the request length (one tag byte per level). With
@@ -99,6 +108,6 @@ end Spike.Api
 
 #erase Spike.Api.handle config {remove_irrel_constr_args := true} to "build/api.ast" mli "build/api.mli"
 
-open Spike.Wire Spike.Order Spike.Formula Spike.Api in
-#gen_ocaml "../ocaml/api/spike_api.ml" [Err, OrderErr, Line, Order, Quote, Formula, Request, Response, ApiError]
+open Spike.Wire Spike.Order Spike.Formula Spike.Bundle Spike.Api in
+#gen_ocaml "../ocaml/api/spike_api.ml" [Err, OrderErr, Line, Order, Quote, Formula, Bundle, Category, Request, Response, ApiError]
   call Request => (Except ApiError Response) via Leancore.call_api

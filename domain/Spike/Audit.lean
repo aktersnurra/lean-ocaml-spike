@@ -25,3 +25,6 @@ axioms from the allowed set {propext, Quot.sound} (or none). -/
 #print axioms Spike.Api.handle_enc
 #print axioms Spike.Api.decode_handle_enc
 #print axioms Spike.Api.handle
+#print axioms Spike.Bundle.Bundle.instCodec
+#print axioms Spike.Bundle.Bundle.codecDecAux_enc
+#print axioms Spike.Bundle.Bundle.price_le_gross

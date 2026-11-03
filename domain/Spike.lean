@@ -6,4 +6,5 @@ import Spike.Codec
 import Spike.Codec.Derive
 import Spike.Codec.OCaml
 import Spike.Formula
+import Spike.Bundle
 import Spike.Api

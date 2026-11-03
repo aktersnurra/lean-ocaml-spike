@@ -11,7 +11,8 @@ import Spike.Codec
 Writes one OCaml module with
 * a type per Lean type (structure → record, other inductive → variant), mutually recursive;
 * `enc_t : Buffer.t -> t -> unit` and `dec_t : Wire_rt.cursor -> t` per type, following
-  exactly the layout `deriving Codec` produces (fields in order, tag byte iff > 1 constructor);
+  exactly the layout `deriving Codec` produces (fields in order; a tag byte iff the type has
+  more than one constructor or is recursive);
 * `encode_t : t -> bytes` and `decode_t : bytes -> (t, int) result`;
 * optionally `call : req -> (resp, e) result`, sending the request through the given
   `bytes -> bytes` function and decoding the reply (a reply that does not decode raises
@@ -74,7 +75,8 @@ def genType (known : List Name) (clashes : List String) (n : Name) : MetaM (Stri
   let env ← getEnv
   let some (.inductInfo ind) := env.find? n | throwError "#gen_ocaml: {n} is not an inductive"
   let tn := typeName n
-  let tagged := ind.ctors.length != 1
+  -- must match `deriving Codec`: recursive types always carry a tag byte
+  let tagged := ind.ctors.length != 1 || ind.isRec || ind.isNested
   let ctors ← ind.ctors.mapM fun c => do
     let .ctorInfo ci := env.find? c |>.get! | unreachable!
     forallTelescopeReducing ci.type fun xs _ => do
@@ -85,12 +87,14 @@ def genType (known : List Name) (clashes : List String) (n : Name) : MetaM (Stri
     let fields := (getStructureFields env n).map (snake ·.getString!)
     let (_, reprs) := ctors[0]!
     let ty := s!"{tn} = \{ " ++ "; ".intercalate ((fields.zip reprs).toList.map fun (f, r) => s!"{f} : {r.ty}") ++ " }"
-    let encBody := if fields.isEmpty then "()" else
-      "; ".intercalate ((fields.zip reprs).toList.map fun (f, r) => s!"{r.enc} b x.{f}")
+    let tagS := if tagged then ["Wire_rt.tag b 0"] else []
+    let encBody := if fields.isEmpty && !tagged then "()" else
+      "; ".intercalate (tagS ++ (fields.zip reprs).toList.map fun (f, r) => s!"{r.enc} b x.{f}")
     let enc := s!"enc_{tn} (b : Buffer.t) (x : {tn}) : unit = {encBody}"
     -- locals are prefixed so a Lean field named `c`/`b`/`x` cannot capture the cursor/buffer
     let lets := String.join ((fields.zip reprs).toList.map fun (f, r) => s!"let f_{f} = {r.dec} c in ")
-    let dec := s!"dec_{tn} (c : Wire_rt.cursor) : {tn} = {lets}(\{ " ++ "; ".intercalate (fields.toList.map fun f => s!"{f} = f_{f}") ++ s!" } : {tn})"
+    let tagCheck := if tagged then "(if Wire_rt.byte c <> 0 then raise (Wire_rt.Decode_error Wire_rt.bad_tag)); " else ""
+    let dec := s!"dec_{tn} (c : Wire_rt.cursor) : {tn} = {tagCheck}{lets}(\{ " ++ "; ".intercalate (fields.toList.map fun f => s!"{f} = f_{f}") ++ s!" } : {tn})"
     return (ty, enc, dec)
   else
     let alts := ctors.map fun (c, reprs) =>
