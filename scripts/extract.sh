@@ -28,7 +28,7 @@ TP="$ROOT/third_party/l2l"
 PEREGRINE="opam exec --switch=$PEREGRINE_SWITCH -- peregrine"
 MALFUNCTION="opam exec --switch=$MALFUNCTION_SWITCH -- malfunction"
 OCAMLOPT="opam exec --switch=$MALFUNCTION_SWITCH -- ocamlfind ocamlopt -package zarith"
-ENTRIES="gate1 gate2"
+ENTRIES="${SPIKE_ENTRIES:-gate1 gate2}"
 MODULES="decidable eq LeanArray nat int axioms $ENTRIES"
 # Compiled OCaml objects go in a per-switch directory; Lean/Peregrine outputs are shared.
 OBJ="$BUILD/ocaml-$MALFUNCTION_SWITCH"
@@ -54,11 +54,22 @@ else
   echo "l2l-primint-numeric.patch does not apply to $L2L_PKG"; exit 1
 fi
 [ "$(git -C "$L2L_PKG" rev-parse HEAD)" = "$L2L_REV" ] || { echo "frontend checkout is not at L2L_REV"; exit 1; }
-( cd domain && lake build )
+# The frontend reports unsupported input (Nat literal >= 2^62, string literal) with a Lean
+# panic! and then CONTINUES: the literal is silently erased to tBox, the .ast is still written,
+# lake exits 0 and Peregrine compiles the wrong program. So treat any PANIC in the Lean output
+# as a hard failure.
+LEAN_LOG="$BUILD/lean.log"
+( cd domain && lake build ) 2>&1 | tee "$LEAN_LOG"
 for e in $ENTRIES; do
-  ( cd domain && lake lean "Spike/${e^}.lean" )
+  rm -f "$BUILD/$e.ast" "$BUILD/$e.mli"
+  ( cd domain && lake lean "Spike/${e^}.lean" ) 2>&1 | tee -a "$LEAN_LOG"
   test -s "$BUILD/$e.ast" && test -s "$BUILD/$e.mli"
 done
+if grep -q "PANIC" "$LEAN_LOG"; then
+  echo "FAILED: the Lean frontend panicked during erasure (output would be silently wrong):"
+  grep -A1 "PANIC" "$LEAN_LOG" | head -20
+  exit 1
+fi
 
 echo "== 2. Fetch runtime axioms at the pinned lean-to-lambdabox revision =="
 if [ ! -d "$TP/.git" ]; then

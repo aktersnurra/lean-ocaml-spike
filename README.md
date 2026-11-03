@@ -104,7 +104,13 @@ extracted core was 7.6x–13x native (which fails the target). Peregrine's optio
    *previous* core (op 2 answered `unknownOp`). The raw extracted module was correct. Fix: the
    generated boundary source embeds a digest of the imported objects. Any production
    integration must make re-extraction invalidate the link, and should test that it does.
-4. **Toolchain:** OCaml 5 needs malfunction installed with `--ignore-constraints-on=ocaml` (stale
+4. **Silent miscompilation on unsupported input (pre-existing frontend behaviour).** A `Nat`
+   literal ≥ 2^62 or a string literal makes the frontend `panic!` and then *continue*: the
+   literal is erased to `tBox`, the `.ast` is written, `lake build` exits 0 ("Build completed
+   successfully") and Peregrine compiles the wrong program. `scripts/extract.sh` now fails if
+   the Lean output contains `PANIC` (verified with a probe entry: the build "succeeds", the
+   guard stops it). Reported upstream (see `docs/`).
+5. **Toolchain:** OCaml 5 needs malfunction installed with `--ignore-constraints-on=ocaml` (stale
    `ocaml < 5.0` constraint, source supports 5.3), the `JCFArray.ml` array axiom (Dynarray), and
    all packages in one `opam install` (a later install silently removed malfunction).
 
