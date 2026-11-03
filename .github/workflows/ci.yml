@@ -12,14 +12,14 @@ jobs:
       OPAMYES: "1"
       OPAMCONFIRMLEVEL: unsafe-yes
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # clang: conf-clang (needed by rocq-certirocq). Without it here, opam installs it on the cold
       # run via depext, then on every warm run sees it missing ("system changes") and rebuilds
       # conf-clang -> rocq-certirocq -> rocq-peregrine (35 min instead of seconds).
       - name: System packages
         run: sudo apt-get update && sudo apt-get install -y opam libgmp-dev bubblewrap m4 pkg-config unzip rsync clang
       - name: Restore opam root
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.opam
           key: opam-${{ runner.os }}-${{ hashFiles('versions.env', 'scripts/bootstrap.sh') }}
