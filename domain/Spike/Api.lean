@@ -3,6 +3,7 @@ import Spike.Gate1
 import Spike.Order
 import Spike.Formula
 import Spike.Bundle
+import Spike.Rules
 import Spike.Codec.Derive
 import Spike.Codec.OCaml
 
@@ -19,9 +20,11 @@ boundary. From them:
 -/
 
 namespace Spike.Api
-open Spike.Wire Spike.Order Spike.Formula Spike.Bundle
+open Spike.Wire Spike.Order Spike.Formula Spike.Bundle Spike.Rules
 
 deriving instance Codec for Err, OrderErr, Line, Order, Quote, Formula, Bundle, Category
+deriving instance Codec for Cond, Rule      -- mutual block, derived together
+deriving instance Codec for Batch, PTree    -- parametric
 
 inductive Request where
   | gate1 (n : Nat)
@@ -32,6 +35,11 @@ inductive Request where
   | priceBundle (b : Bundle)
   | echoBundle (b : Bundle)
   | echoCategory (c : Category)
+  | priceBatch (b : Batch Order)            -- one result per order
+  | sumTree (t : PTree Nat)
+  | echoTree (t : PTree Nat)
+  | applyRule (r : Rule) (o : Order)
+  | echoRule (r : Rule)
 deriving Codec
 
 inductive Response where
@@ -42,6 +50,9 @@ inductive Response where
   | formula (f : Formula)
   | bundle (b : Bundle)
   | category (c : Category)
+  | quotes (b : Batch (Except OrderErr Quote))
+  | tree (t : PTree Nat)
+  | rule (r : Rule)
 deriving Codec
 
 inductive ApiError where
@@ -62,6 +73,11 @@ def serve : Request → Except ApiError Response
   | .priceBundle b => .ok (.value b.price)
   | .echoBundle b => .ok (.bundle b)
   | .echoCategory c => .ok (.category c)
+  | .priceBatch b => .ok (.quotes ⟨b.items.map priceOrder⟩)
+  | .sumTree t => .ok (.value t.sum)
+  | .echoTree t => .ok (.tree t)
+  | .applyRule r o => .ok (.value (r.discount o))
+  | .echoRule r => .ok (.rule r)
 
 /-- Request size limit. Recursive request types (`Formula`) are decoded and evaluated by
 non-tail recursion whose depth can reach the request length (one tag byte per level). With
@@ -108,6 +124,6 @@ end Spike.Api
 
 #erase Spike.Api.handle config {remove_irrel_constr_args := true} to "build/api.ast" mli "build/api.mli"
 
-open Spike.Wire Spike.Order Spike.Formula Spike.Bundle Spike.Api in
-#gen_ocaml "../ocaml/api/spike_api.ml" [Err, OrderErr, Line, Order, Quote, Formula, Bundle, Category, Request, Response, ApiError]
+open Spike.Wire Spike.Order Spike.Formula Spike.Bundle Spike.Rules Spike.Api in
+#gen_ocaml "../ocaml/api/spike_api.ml" [Err, OrderErr, Line, Order, Quote, Formula, Bundle, Category, Cond, Rule, Batch, PTree, Request, Response, ApiError]
   call Request => (Except ApiError Response) via Leancore.call_api

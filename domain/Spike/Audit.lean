@@ -28,3 +28,8 @@ axioms from the allowed set {propext, Quot.sound} (or none). -/
 #print axioms Spike.Bundle.Bundle.instCodec
 #print axioms Spike.Bundle.Bundle.codecDecAux_enc
 #print axioms Spike.Bundle.Bundle.price_le_gross
+#print axioms Spike.Rules.Rule.instCodec
+#print axioms Spike.Rules.Cond.instCodec
+#print axioms Spike.Rules.Batch.instCodec
+#print axioms Spike.Rules.PTree.instCodec
+#print axioms Spike.Rules.Rule.discount_le_cap

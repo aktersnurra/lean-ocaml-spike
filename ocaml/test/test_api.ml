@@ -23,6 +23,9 @@ let pp = function
   | Ok (Formula _) -> "formula"
   | Ok (Bundle _) -> "bundle"
   | Ok (Category _) -> "category"
+  | Ok (Quotes b) -> Printf.sprintf "quotes (%d)" (List.length b.items)
+  | Ok (Tree _) -> "tree"
+  | Ok (Rule _) -> "rule"
   | Error (Transport e) -> "transport " ^ pp_err e
   | Error (Order e) -> "order " ^ pp_oe e
 
@@ -51,7 +54,7 @@ let () =
     | Error c -> fail "%s: reply does not decode (code %d): %s" name c (hex reply)
   in
   raw "empty request" "" (Error (Transport Truncated));
-  raw "unknown request tag" "\x09" (Error (Transport BadTag));
+  raw "unknown request tag (0xff)" "\xff" (Error (Transport BadTag));
   raw "truncated varint" "\x00\x80" (Error (Transport Truncated));
   raw "trailing bytes" "\x00\x05\x00" (Error (Transport Trailing));
   raw "65,537-byte request (size limit)" ("\x00" ^ String.make 65_535 '\x80' ^ "\x01") (Error (Transport TooLarge));
@@ -122,11 +125,16 @@ let () =
     let rec rb d = if d = 0 || Random.int 3 = 0 then Item (rz (), rz (), rz ())
       else Group (z (Random.int 120), List.init (Random.int 4) (fun _ -> rb (d - 1))) in
     let rec rc d = { id = rz (); children = if d = 0 then [] else List.init (Random.int 3) (fun _ -> rc (d - 1)) } in
-    let r = match Random.int 8 with
+    let r = match Random.int 11 with
       | 0 -> Request_gate1 (rz ()) | 1 -> PriceOrder (ro ()) | 2 -> Echo (ro ())
       | 3 -> EvalFormula (rf (Random.int 5), rz ()) | 4 -> EchoFormula (rf (Random.int 5))
       | 5 -> PriceBundle (rb (Random.int 4)) | 6 -> EchoBundle (rb (Random.int 4))
-      | _ -> EchoCategory (rc (Random.int 4)) in
+      | 7 -> EchoCategory (rc (Random.int 4))
+      | 8 -> PriceBatch { items = List.init (Random.int 4) (fun _ -> ro ()) }
+      | 9 -> let rec rt d = if d = 0 || Random.bool () then Leaf (rz ()) else Node (List.init (Random.int 4) (fun _ -> rt (d - 1))) in
+             EchoTree (rt 4)
+      | _ -> let rec rr d = if d = 0 || Random.bool () then Pct (MinQty (rz ()), rz ()) else Best (List.init (Random.int 3) (fun _ -> rr (d - 1))) in
+             ApplyRule (rr 3, ro ()) in
     let s = ref (Bytes.to_string (encode_request r)) in
     for _ = 1 to 1 + Random.int 3 do s := mutate (Bytes.of_string !s) done;
     let bs = Bytes.of_string !s in
@@ -206,4 +214,55 @@ let () =
   if deep_bundle 2 <> Bytes.to_string (encode_bundle shallow) then fail "deep_bundle builder disagrees with the generated encoder";
   raw "deep bundle, 15k levels (45 KB)" (price_bundle_tag ^ deep_bundle 15_000) (Ok (Value (z 6)));
   raw "deep bundle, 300k levels (900 KB)" (price_bundle_tag ^ deep_bundle 300_000) (Error (Transport TooLarge));
+  print_endline "-- parametric (Batch, PTree) and mutual (Cond/Rule) types";
+  (* batch: each item must equal a single PriceOrder call *)
+  let n_p = 5_000 and bad = ref 0 in
+  for _ = 1 to n_p do
+    let os = List.init (Random.int 6) (fun _ -> { customer = rz (); discount_pct = z (Random.int 110);
+      lines = List.init (Random.int 5) (fun j -> { sku = z (if Random.int 20 = 0 then 0 else j); qty = z (Random.int 4); unit_price = rz () }) }) in
+    let single o = match call (PriceOrder o) with Ok (Quote q) -> Ok q | Error (Order e) -> Error e | r -> failwith ("unexpected " ^ pp r) in
+    match call (PriceBatch { items = os }) with
+    | Ok (Quotes b) when b.items = List.map single os -> ()
+    | r -> incr bad; if !bad < 5 then fail "batch mismatch: %s" (pp r)
+  done;
+  Printf.printf "batches: %d random (0-5 orders each), %d mismatches\n" n_p !bad;
+  (* ptree: sum vs OCaml, echo *)
+  let rec rt d = if d = 0 || Random.int 3 = 0 then Leaf (rz ()) else Node (List.init (Random.int 5) (fun _ -> rt (d - 1))) in
+  let rec tsum = function Leaf a -> a | Node ks -> List.fold_left (fun a t -> Z.add a (tsum t)) Z.zero ks in
+  let bad = ref 0 in
+  for _ = 1 to 20_000 do
+    let t = rt (Random.int 6) in
+    (match call (SumTree t) with Ok (Value v) when Z.equal v (tsum t) -> () | r -> incr bad; if !bad < 5 then fail "tree sum: %s" (pp r));
+    (match call (EchoTree t) with Ok (Tree t') when t' = t -> () | r -> incr bad; if !bad < 5 then fail "tree echo: %s" (pp r))
+  done;
+  Printf.printf "trees: 20000 random, sum + echo, %d mismatches\n" !bad;
+  (* rules: discount vs OCaml reference evaluator, echo *)
+  let rec total_qty = function [] -> Z.zero | l :: ls -> Z.add l.qty (total_qty ls) in
+  let rec holds o = function
+    | MinQty n -> Z.leq n (total_qty o.lines)
+    | HasSku s -> List.exists (fun l -> Z.equal l.sku s) o.lines
+    | Not c -> not (holds o c)
+    | Both (a, b) -> holds o a && holds o b
+    | Fires r -> Z.sign (disc o r) > 0
+  and disc o = function
+    | Pct (c, p) -> if holds o c then p else Z.zero
+    | Best rs -> List.fold_left (fun a r -> Z.max a (disc o r)) Z.zero rs in
+  let rec rcond d = if d = 0 then (if Random.bool () then MinQty (z (Random.int 8)) else HasSku (z (Random.int 6))) else
+    match Random.int 5 with
+    | 0 -> MinQty (z (Random.int 8)) | 1 -> HasSku (z (Random.int 6)) | 2 -> Not (rcond (d - 1))
+    | 3 -> Both (rcond (d - 1), rcond (d - 1)) | _ -> Fires (rrule (d - 1))
+  and rrule d = if d = 0 || Random.int 3 = 0 then Pct (rcond (max 0 (d - 1)), z (Random.int 60)) else Best (List.init (Random.int 4) (fun _ -> rrule (d - 1))) in
+  let bad = ref 0 in
+  for _ = 1 to 20_000 do
+    let r = rrule (Random.int 5) in
+    let o = { customer = z 1; discount_pct = z 0; lines = List.init (Random.int 5) (fun j -> { sku = z j; qty = z (Random.int 3); unit_price = z 1 }) } in
+    (match call (ApplyRule (r, o)) with Ok (Value v) when Z.equal v (disc o r) -> () | x -> incr bad; if !bad < 5 then fail "rule discount: %s" (pp x));
+    (match call (EchoRule r) with Ok (Rule r') when r' = r -> () | x -> incr bad; if !bad < 5 then fail "rule echo: %s" (pp x))
+  done;
+  Printf.printf "rules: 20000 random (mutual Cond/Rule), discount + echo, %d mismatches\n" !bad;
+  expect "rule: best of (10%% if qty>=3, 20%% if sku 7 present)"
+    (call (ApplyRule (Best [ Pct (MinQty (z 3), z 10); Pct (HasSku (z 7), z 20) ], order 0 [ line 1 3 5 ])))
+    (Ok (Value (z 10)));
+  expect "rule: fires(...) inside a condition"
+    (call (ApplyRule (Pct (Fires (Pct (HasSku (z 1), z 5)), z 30), order 0 [ line 1 1 5 ]))) (Ok (Value (z 30)));
   if !failures > 0 then (Printf.printf "%d FAILURES\n" !failures; exit 1) else print_endline "== generated client tests PASSED =="
